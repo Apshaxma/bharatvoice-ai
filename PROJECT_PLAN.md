@@ -39,39 +39,37 @@ evaluated.
 
 ```
 Browser (React 19 + Vite)
-  ├─ MediaRecorder (WebM/Opus) ────────────┐
-  ├─ speechSynthesis (browser TTS fallback) │
-  └─ Assistant UI (chat + pipeline trace)   │
+  ├─ Web Speech API (live STT — no upload) ─┐
+  ├─ MediaRecorder (fallback upload)         │
+  ├─ speechSynthesis (TTS — no vendor)       │
+  └─ Assistant UI (chat + pipeline trace)    │
                                            ▼
                       ┌─────────────────────────────────────┐
                       │         Convex backend              │
-                      │                                     │
-                      │  audio.ts   (storage upload URL)    │
-                      │  transcribe.ts  (STT action)        │
-                      │     └── ai/stt.ts   (Sarvam | mock) │
-                      │  agent.ts   (runAgent action)       │
-                      │     ├── ai/llm.ts (gateway | mock)  │
-                      │     ├── tools/*  (weather, cab)     │
-                      │     ├── ai/tts.ts (Sarvam | browser)│
-                      │     └── agentDb.ts (DB layer)       │
+                      │                                     ││  audio.ts   (storage upload URL)    │
+│  transcribe.ts  (STT action)        │
+│     └── ai/stt.ts   (mock only)     │
+│  agent.ts   (runAgent action)       │
+│     ├── ai/llm.ts (any LLM | mock)  │
+│     ├── tools/*  (weather, cab)     │
+│     └── agentDb.ts (DB layer)       │
                       │  schema.ts   (auth + product tables)│
                       └──────────────┬──────────────────────┘
                                      │
               ┌──────────────────────┼──────────────────────┐
               ▼                      ▼                      ▼
-        Open-Meteo (weather)   VLY AI gateway (LLM)   Sarvam AI (STT/TTS)
-        no key required        billed via project     optional keys
+        Open-Meteo (weather)   Your LLM (any           VLY AI gateway
+        no key required        OpenAI-compatible API)  (auto-injected key)
 ```
 
 **One agent turn end to end:**
 
 1. **Listen** — MediaRecorder captures audio in the browser; bytes are PUT to
    Convex storage.
-2. **Transcribe** — the `transcribeAudio` action runs Sarvam Saaras (or the
-   deterministic mock), requesting automatic language detection
-   (`language_code=unknown`) so one call returns both transcript and language
-   with confidence. **The raw audio is deleted immediately after; only text +
-   metadata are persisted.**
+2. **Transcribe** — live speech is recognized in the browser via the Web
+   Speech API (no upload, no key). Browsers without it fall back to
+   `MediaRecorder` → backend mock STT. **Only text + metadata are ever
+   persisted; raw audio never leaves the device.**
 3. **Understand** — a *planner* LLM call classifies intent and decides which
    tools are needed (strict JSON, temperature 0.1).
 4. **Gate** — tool calls are checked against the registry policy. Safe tools
@@ -83,9 +81,8 @@ Browser (React 19 + Vite)
 6. **Answer** — a *responder* LLM call generates 1–3 spoken-friendly sentences
    in the user's detected language, grounded in the tool results (or
    acknowledging a denied approval).
-7. **Speak** — Sarvam Bulbul TTS synthesizes the answer and the audio is served
-   back; when no TTS key is configured the client falls back to browser
-   `speechSynthesis` so the product still works.
+7. **Speak** — the browser's `speechSynthesis` speaks the answer in the
+   detected language. No TTS vendor or key involved.
 8. **Observe** — every stage's latency, the intent, tool calls, model usage and
    a self-evaluation score are persisted to `agentRuns` and surfaced in the
    Insights dashboard.
@@ -95,9 +92,9 @@ Browser (React 19 + Vite)
 | Component | File(s) | Responsibility |
 |---|---|---|
 | Language registry | `src/convex/ai/languages.ts` | Single source of truth for 23 BCP-47 codes, labels, scripts, STT modes |
-| STT abstraction | `src/convex/ai/stt.ts` | `SpeechToTextProvider` interface, Sarvam provider with retry/backoff, mock provider, factory |
-| LLM abstraction | `src/convex/ai/llm.ts` | `LLMProvider` interface, VLY gateway provider, deterministic mock planner/responder, JSON extraction helpers |
-| TTS abstraction | `src/convex/ai/tts.ts` | `TTSProvider` interface, Sarvam Bulbul provider, browser fallback decision |
+| STT layer | `src/convex/ai/stt.ts` | `SpeechToTextProvider` interface + deterministic mock (live recognition is browser-native) |
+| LLM abstraction | `src/convex/ai/llm.ts` | `LLMProvider` interface, OpenAI-compatible + VLY gateway providers, deterministic mock planner/responder/judge, JSON helpers |
+| Browser voice | `src/lib/voice.ts` | Web Speech API recognition, MediaRecorder fallback, speechSynthesis |
 | Agent pipeline | `src/convex/agent.ts` | `runAgent` action (plan → gate → act → answer → speak → observe) and `resumeApproval` action |
 | DB layer | `src/convex/agentDb.ts` | Conversations, messages, runs, metrics aggregation, approvals (internal + user-facing functions) |
 | Tool registry | `src/convex/tools/index.ts` | Tool definitions with `requiresApproval` policy and human-readable summaries |
@@ -118,12 +115,13 @@ Browser (React 19 + Vite)
   HTTP calls), a database for memory/audit, and file storage for audio — all
   in one deployable unit with per-user auth built in.
 - **Auth:** Convex Auth (email OTP + anonymous) — existing template wiring.
-- **Speech-to-text:** Sarvam AI `saaras:v3/v4` (22 Indic languages + English,
-  single-call language detection). Abstracted behind an interface with a mock.
-- **Text-to-speech:** Sarvam AI `bulbul:v3`, with browser `speechSynthesis` as
-  a zero-key fallback.
-- **LLM:** the VLY AI gateway (OpenAI-compatible, many models behind one key,
-  usage billed to the project). Abstracted behind an interface with a mock.
+- **Speech-to-text:** the browser's Web Speech API (SpeechRecognition) —
+  live, key-free, 20+ Indian languages + English. A deterministic mock
+  provider keeps the upload-fallback pipeline working offline.
+- **Text-to-speech:** browser `speechSynthesis` — no vendor, no key.
+- **LLM:** pluggable and vendor-independent — any OpenAI-compatible endpoint
+  (`LLM_API_KEY`/`LLM_BASE_URL`), the VLY AI gateway (auto-injected key), or
+  the deterministic offline mock. All behind one `LLMProvider` interface.
 - **Weather:** Open-Meteo (free, no key) with geocoding; deterministic mock
   fallback.
 - **Testing:** Bun's built-in test runner (`bun test`) — no new dependency.
@@ -158,7 +156,7 @@ Browser (React 19 + Vite)
 
 | Risk | Mitigation |
 |---|---|
-| Vendor API drift (Sarvam) | Provider interfaces + factory functions; providers isolated in `ai/*`; docs pinned in comments; mock mode keeps the app alive |
+| LLM vendor drift | `LLMProvider` interface + factory; any OpenAI-compatible endpoint works; the deterministic mock keeps the app alive offline |
 | LLM returns malformed JSON | `extractJson`/`parseLlmJson` with fence stripping; plan failure degrades to a chat-only turn, still logged |
 | Weather API down | `getWeather` never throws — deterministic mock fallback |
 | No API keys configured | `MOCK_MODE`/missing-key → mocks everywhere; `getRuntimeInfo` tells the UI which mode it is in |
@@ -221,10 +219,10 @@ for answers), and regression-gating eval scores in CI.
   backend (auth, storage, actions) as managed services; the project is
   deployed through the platform's publish flow. No self-hosted servers.
 - **Configuration:** all secrets live in the platform's environment/Keys UI
-  (never in the repo or `.env`): `SARVAM_API_KEY`, optional
-  `SARVAM_STT_MODEL`/`SARVAM_TTS_MODEL`/`SARVAM_TTS_SPEAKER`,
-  `AGENT_LLM_MODEL`, `MOCK_MODE`. The VLY integration key is injected
-  automatically.
+  (never in the repo or `.env`): optional `LLM_API_KEY` / `LLM_BASE_URL` /
+  `LLM_MODEL` for any OpenAI-compatible LLM, `AGENT_LLM_MODEL` for the VLY
+  gateway, and `MOCK_MODE`. The VLY integration key is injected automatically.
+  Speech needs no keys — it is browser-native.
 - **Operational behavior:** structured JSON log lines per run
   (`service: bharatvoice-agent` / `bharatvoice-transcribe`) with request ids
   for trace correlation; per-user metrics queries; graceful degradation to

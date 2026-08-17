@@ -125,6 +125,9 @@ function createLlm(): LLMProvider {
     mockMode: isMockMode(),
     apiKey: env("VLY_INTEGRATION_KEY"),
     model: env("AGENT_LLM_MODEL") || undefined,
+    openAiApiKey: env("LLM_API_KEY") || undefined,
+    openAiBaseUrl: env("LLM_BASE_URL") || undefined,
+    openAiModel: env("LLM_MODEL") || undefined,
   });
 }
 

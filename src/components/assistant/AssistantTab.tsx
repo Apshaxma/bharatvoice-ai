@@ -29,10 +29,13 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import {
   browserSpeechAvailable,
+  browserSpeechRecognitionAvailable,
   isMediaRecorderSupported,
   speakText,
+  startListeningSession,
   startRecordingSession,
   stopSpeaking,
+  type ListeningSession,
 } from "@/lib/voice";
 import { cn } from "@/lib/utils";
 import { ToolTrace } from "./ToolTrace";
@@ -103,6 +106,8 @@ export default function AssistantTab() {
   const recorderRef = useRef<Awaited<ReturnType<typeof startRecordingSession>> | null>(
     null,
   );
+  const listeningRef = useRef<ListeningSession | null>(null);
+  const listeningStartedAtRef = useRef<number | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const processingRef = useRef(false);
 
@@ -190,6 +195,16 @@ export default function AssistantTab() {
   const toggleRecording = async () => {
     if (isRecording) {
       stopSpeaking();
+      // Stop whichever capture mode is active. For live recognition, stop()
+      // delivers the best transcript so far via onFinal → sendTurn.
+      if (listeningRef.current) {
+        const session = listeningRef.current;
+        listeningRef.current = null;
+        listeningStartedAtRef.current = null;
+        setIsRecording(false);
+        session.stop();
+        return;
+      }
       const session = recorderRef.current;
       recorderRef.current = null;
       setIsRecording(false);
@@ -236,8 +251,57 @@ export default function AssistantTab() {
         setStage("planning");
       }
     } else {
+      // Preferred path: live Web Speech API recognition — no uploads, no keys.
+      if (browserSpeechRecognitionAvailable()) {
+        const startedAt = Date.now();
+        try {
+          const session = startListeningSession({
+            languageCode:
+              language !== "auto" && language !== "detected"
+                ? language
+                : "hi-IN",
+            onInterim: (text) => setInput(text),
+            onFinal: (text) => {
+              listeningRef.current = null;
+              listeningStartedAtRef.current = null;
+              setIsRecording(false);
+              if (!text) {
+                setInput("");
+                toast.info("No speech detected. Try again.");
+                return;
+              }
+              setInput(text);
+              void sendTurn(text, "voice", {
+                sttLatencyMs: Date.now() - startedAt,
+              });
+            },
+            onError: (message) => {
+              listeningRef.current = null;
+              listeningStartedAtRef.current = null;
+              setIsRecording(false);
+              toast.error(message);
+            },
+          });
+          listeningRef.current = session;
+          listeningStartedAtRef.current = startedAt;
+          setIsRecording(true);
+          setInput("");
+          setStage("transcribing");
+        } catch (err) {
+          toast.error(
+            err instanceof Error
+              ? err.message
+              : "Speech recognition failed. Type your question instead.",
+          );
+        }
+        return;
+      }
+
+      // Fallback: record audio → upload → backend (mock) STT.
       if (!isMediaRecorderSupported()) {
-        toast.error("This browser does not support audio recording.");
+        toast.error(
+          "This browser does not support speech recognition or audio recording. Type instead.",
+        );
         return;
       }
       try {
@@ -430,8 +494,8 @@ export default function AssistantTab() {
           <p className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
             <Mic className="size-3" />
             {isRecording
-              ? "Recording — tap the square to stop and transcribe."
-              : "Raw audio is deleted after transcription — only text is stored."}
+              ? "Listening — tap the square to stop and send."
+              : "Live transcription in your browser — no audio leaves your device."}
           </p>
         </div>
       </Card>

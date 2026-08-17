@@ -122,6 +122,95 @@ export class VlyLLMProvider implements LLMProvider {
 }
 
 /**
+ * Generic OpenAI-compatible chat-completions provider.
+ *
+ * Lets the app point at ANY OpenAI-compatible endpoint — OpenAI, Groq,
+ * Together, Mistral, Ollama (local), corporate gateways, etc. — via
+ * LLM_API_KEY / LLM_BASE_URL / LLM_MODEL, so the LLM layer is fully
+ * vendor-independent.
+ */
+export class OpenAICompatibleLLMProvider implements LLMProvider {
+  readonly name = "openai-compatible";
+  readonly model: string;
+  private readonly apiKey: string;
+  private readonly baseUrl: string;
+  private readonly timeoutMs: number;
+
+  constructor(options: {
+    apiKey: string;
+    model?: string;
+    baseUrl?: string;
+    timeoutMs?: number;
+  }) {
+    if (!options.apiKey) throw new Error("OpenAICompatibleLLMProvider: apiKey is required");
+    this.apiKey = options.apiKey;
+    this.model = options.model ?? "gpt-4o-mini";
+    this.baseUrl = (options.baseUrl ?? "https://api.openai.com/v1").replace(/\/$/, "");
+    this.timeoutMs = options.timeoutMs ?? 30_000;
+  }
+
+  async complete(
+    messages: LLMMessage[],
+    options: LLMOptions = {},
+  ): Promise<LLMResult> {
+    const started = Date.now();
+    try {
+      const response = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: this.model,
+          messages: messages.map((m) => ({ role: m.role, content: m.content })),
+          temperature: options.temperature ?? 0.4,
+          max_tokens: options.maxTokens ?? 700,
+        }),
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+
+      if (!response.ok) {
+        const detail = await response.text().catch(() => "");
+        return {
+          content: "",
+          latencyMs: Date.now() - started,
+          provider: this.name,
+          model: this.model,
+          error: `LLM provider returned HTTP ${response.status}${detail ? `: ${detail.slice(0, 200)}` : ""}`,
+        };
+      }
+
+      const body = (await response.json()) as {
+        choices?: { message?: { content?: string } }[];
+        usage?: { prompt_tokens?: number; completion_tokens?: number };
+      };
+      const content = body.choices?.[0]?.message?.content ?? "";
+      return {
+        content,
+        latencyMs: Date.now() - started,
+        provider: this.name,
+        model: this.model,
+        promptTokens: body.usage?.prompt_tokens,
+        completionTokens: body.usage?.completion_tokens,
+        error: content ? null : "LLM returned an empty response",
+      };
+    } catch (err) {
+      const aborted =
+        err instanceof DOMException &&
+        (err.name === "TimeoutError" || err.name === "AbortError");
+      return {
+        content: "",
+        latencyMs: Date.now() - started,
+        provider: this.name,
+        model: this.model,
+        error: aborted ? "LLM request timed out" : "LLM request failed",
+      };
+    }
+  }
+}
+
+/**
  * Deterministic mock brain used when MOCK_MODE=true or no gateway key is set.
  * It understands the demo vertical (weather + a sensitive "book cab" action)
  * across the supported languages, so the whole pipeline runs offline and tests
@@ -425,20 +514,34 @@ export class MockLLMProvider implements LLMProvider {
 
 export interface LLMProviderConfig {
   mockMode: boolean;
-  /** Gateway deployment token (VLY_INTEGRATION_KEY). Empty → mock. */
+  /** VLY gateway deployment token (VLY_INTEGRATION_KEY). Empty → not used. */
   apiKey: string;
-  /** Model id on the AI gateway, e.g. "gpt-5-mini". */
+  /** Model id on the VLY gateway, e.g. "gpt-5-mini". */
   model?: string;
+  /** API key for an OpenAI-compatible endpoint (LLM_API_KEY). */
+  openAiApiKey?: string;
+  /** Base URL for the OpenAI-compatible endpoint (LLM_BASE_URL). */
+  openAiBaseUrl?: string;
+  /** Model id for the OpenAI-compatible endpoint (LLM_MODEL). */
+  openAiModel?: string;
 }
 
 /**
- * Provider factory. The rule is simple:
- *   MOCK_MODE=true        → mock (offline demo/tests)
- *   no gateway key        → mock (app must still run)
- *   otherwise             → VLY gateway
+ * Provider factory — vendor-independent by design:
+ *   MOCK_MODE=true or no keys at all  → mock (fully offline demo/tests)
+ *   LLM_API_KEY set                    → any OpenAI-compatible endpoint
+ *   VLY_INTEGRATION_KEY set            → the VLY AI gateway
+ * An explicit OpenAI-compatible key wins over the gateway key.
  */
 export function createLLMProvider(config: LLMProviderConfig): LLMProvider {
-  const useMock = config.mockMode || !config.apiKey;
+  const useMock = config.mockMode || (!config.apiKey && !config.openAiApiKey);
   if (useMock) return new MockLLMProvider();
+  if (config.openAiApiKey) {
+    return new OpenAICompatibleLLMProvider({
+      apiKey: config.openAiApiKey,
+      model: config.openAiModel ?? config.model,
+      baseUrl: config.openAiBaseUrl,
+    });
+  }
   return new VlyLLMProvider(config.model ?? "gpt-5-mini");
 }

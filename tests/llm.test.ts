@@ -10,6 +10,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   MockLLMProvider,
+  OpenAICompatibleLLMProvider,
   VlyLLMProvider,
   createLLMProvider,
   extractJson,
@@ -216,20 +217,24 @@ describe("mock responder — grounded multilingual answers", () => {
 // Provider factory
 // ---------------------------------------------------------------------------
 
-describe("LLM provider factory", () => {
+describe("LLM provider factory — vendor-independent", () => {
   test("mock mode forces the mock", () => {
-    expect(createLLMProvider({ mockMode: true, apiKey: "sk-test" }).name).toBe(
-      "mock-llm",
-    );
+    expect(
+      createLLMProvider({ mockMode: true, apiKey: "sk-test" }).name,
+    ).toBe("mock-llm");
   });
 
-  test("missing key falls back to mock", () => {
+  test("no keys at all falls back to mock", () => {
     expect(createLLMProvider({ mockMode: false, apiKey: "" }).name).toBe(
       "mock-llm",
     );
+    expect(
+      createLLMProvider({ mockMode: false, apiKey: "", openAiApiKey: "" })
+        .name,
+    ).toBe("mock-llm");
   });
 
-  test("key + no mock returns the live gateway provider", () => {
+  test("VLY gateway key selects the gateway provider", () => {
     const p = createLLMProvider({
       mockMode: false,
       apiKey: "sk-test",
@@ -238,5 +243,27 @@ describe("LLM provider factory", () => {
     expect(p).toBeInstanceOf(VlyLLMProvider);
     expect(p.name).toBe("vly-gateway");
     expect(p.model).toBe("gpt-5-mini");
+  });
+
+  test("an OpenAI-compatible key selects the generic provider", () => {
+    const p = createLLMProvider({
+      mockMode: false,
+      apiKey: "",
+      openAiApiKey: "sk-test",
+      openAiModel: "llama-3.1-8b",
+      openAiBaseUrl: "http://localhost:11434/v1",
+    });
+    expect(p).toBeInstanceOf(OpenAICompatibleLLMProvider);
+    expect(p.name).toBe("openai-compatible");
+    expect(p.model).toBe("llama-3.1-8b");
+  });
+
+  test("an OpenAI-compatible key wins over the gateway key", () => {
+    const p = createLLMProvider({
+      mockMode: false,
+      apiKey: "vly-key",
+      openAiApiKey: "sk-openai",
+    });
+    expect(p).toBeInstanceOf(OpenAICompatibleLLMProvider);
   });
 });

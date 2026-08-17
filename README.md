@@ -36,27 +36,27 @@ Browser (React 19 + Vite)
 ┌──────────────────────────────────────────────────────┐
 │ Convex backend                                        │
 │  audio.ts          → storage upload URL               │
-│  transcribe.ts     → STT action (Sarvam Saaras | mock)│
+│  transcribe.ts     → STT action (mock; live is browser)│
 │  agent.ts          → runAgent / resumeApproval        │
-│  ai/stt.ts         → SpeechToTextProvider abstraction │
-│  ai/llm.ts         → LLMProvider (VLY gateway | mock) │
-│  ai/tts.ts         → TTSProvider (Sarvam Bulbul)      │
+│  ai/stt.ts         → SpeechToTextProvider (mock)      │
+│  ai/llm.ts         → LLMProvider (any LLM | mock)     │
 │  tools/*           → registry + weather (Open-Meteo)  │
 │  agentDb.ts        → conversations, runs, approvals   │
 └──────────────┬───────────────────────────────────────┘
                │
    ┌───────────┼───────────────┐
    ▼           ▼               ▼
- Open-Meteo  VLY AI gateway  Sarvam AI (STT/TTS)
+ Open-Meteo  Your LLM (any   VLY AI gateway
+ (no key)    OpenAI-compatible) (auto key)
 ```
 
 ### One turn, end to end
 
-1. **Listen** — `MediaRecorder` captures audio; bytes are PUT to Convex storage.
-2. **Transcribe** — the `transcribeAudio` action calls Sarvam Saaras (or the
-   deterministic mock) with `language_code=unknown`, so one call returns the
-   transcript **and** the detected language with confidence. Raw audio is
-   deleted immediately — only text + metadata are stored.
+1. **Listen** — the mic is tapped; live speech is recognized in the browser
+   via the Web Speech API (no upload, no key). Browsers without it fall back
+   to `MediaRecorder` → backend mock STT.
+2. **Transcribe** — recognition is browser-native; only text + metadata are
+   ever stored. Raw audio never leaves the device.
 3. **Understand** — a *planner* LLM call classifies intent and declares needed
    tools as strict JSON.
 4. **Gate** — tool calls are checked against the registry. Safe tools
@@ -66,8 +66,8 @@ Browser (React 19 + Vite)
    fallback so the agent never crashes on network failure).
 6. **Answer** — a *responder* LLM call writes 1–3 spoken-friendly sentences in
    the detected language, grounded in tool results.
-7. **Speak** — Sarvam Bulbul TTS (or browser `speechSynthesis` when no key is
-   set) plays the answer.
+7. **Speak** — the browser's `speechSynthesis` speaks the answer in the
+   detected language. No TTS vendor or key.
 8. **Observe** — per-stage latency, intent, tool calls, model usage and a
    self-evaluation score persist to `agentRuns` and surface in the **Insights**
    tab.
@@ -77,9 +77,9 @@ Browser (React 19 + Vite)
 - **Frontend:** React 19 · Vite · TypeScript · Tailwind v4 · shadcn/ui · Framer Motion · Lucide
 - **Backend & DB:** Convex (actions, queries, storage, reactive subscriptions)
 - **Auth:** Convex Auth (email OTP + anonymous)
-- **Speech-to-text:** Sarvam AI `saaras:v3` (22 Indic + English, auto language detection)
-- **Text-to-speech:** Sarvam AI `bulbul:v3` → browser synthesis fallback
-- **LLM:** VLY AI gateway (OpenAI-compatible, many models behind one key) → deterministic mock fallback
+- **Speech-to-text:** browser Web Speech API (`SpeechRecognition`) → deterministic mock fallback
+- **Text-to-speech:** browser `speechSynthesis` (no vendor or key)
+- **LLM:** pluggable & vendor-independent — any OpenAI-compatible endpoint, the VLY AI gateway, or the deterministic offline mock
 - **Weather:** Open-Meteo (free, no key)
 - **Tests:** Bun's built-in runner — `bun test`
 
@@ -115,18 +115,18 @@ bun tsc -b --noEmit   # typecheck
 
 | Variable | Purpose | Required |
 |---|---|---|
-| `VLY_INTEGRATION_KEY` | LLM gateway token (auto-injected) | auto |
-| `SARVAM_API_KEY` | Sarvam speech-to-text **and** text-to-speech | no* |
-| `SARVAM_STT_MODEL` | e.g. `saaras:v3` / `saaras:v4` | no |
-| `SARVAM_TTS_MODEL` | e.g. `bulbul:v3` | no |
-| `SARVAM_TTS_SPEAKER` | e.g. `shubh` | no |
-| `AGENT_LLM_MODEL` | e.g. `gpt-5-mini` / `claude-sonnet-4-5` | no |
-| `MOCK_MODE` | `true` forces every provider to its mock | no |
+| `VLY_INTEGRATION_KEY` | VLY AI gateway token (auto-injected) | auto |
+| `AGENT_LLM_MODEL` | Model id on the VLY gateway, e.g. `gpt-5-mini` | no |
+| `LLM_API_KEY` | Key for **any** OpenAI-compatible LLM endpoint | no* |
+| `LLM_BASE_URL` | OpenAI-compatible base URL (default `https://api.openai.com/v1`) | no |
+| `LLM_MODEL` | Model id for the OpenAI-compatible endpoint, e.g. `gpt-4o-mini`, `llama-3.1-8b`, `deepseek-chat` | no |
+| `MOCK_MODE` | `true` forces the mock LLM | no |
 
-\* Without `SARVAM_API_KEY` the app runs fully in **mock mode**: STT returns
-realistic sample utterances, the LLM planner/responder are deterministic, and
-answers are spoken by the browser. The UI reports the active mode via
-`getRuntimeInfo`.
+\* Speech is fully browser-native (Web Speech API recognition + `speechSynthesis`)
+— no speech keys are ever needed. With **no LLM keys** the agent runs on the
+deterministic offline mock brain; set `LLM_API_KEY` to point at any
+OpenAI-compatible model, or use the auto-injected VLY gateway key. An explicit
+`LLM_API_KEY` always wins over the gateway.
 
 ## LLM-as-judge evaluation
 
@@ -138,8 +138,8 @@ per-criterion notes:
   recent unscored runs immediately.
 - **Automatic** — a scheduled job (`crons.ts`) scores unscored runs every 30
   minutes.
-- **Resilient** — the judge uses the same `LLMProvider` as the agent (gateway
-  model live, deterministic mock brain offline). If the judge model fails or
+- **Resilient** — the judge uses the same `LLMProvider` as the agent (your
+  configured LLM live, deterministic mock brain offline). If the judge model fails or
   returns malformed output, it falls back to the shared heuristic scorer
   instead of failing the run.
 
@@ -165,10 +165,10 @@ the sensitive tool's result is never fabricated.
 
 ## Testing & evaluation
 
-`bun test` runs 60+ tests across 6 files with zero external dependencies:
+`bun test` runs 59 tests across 6 files with zero external dependencies:
 
 - **languages** — registry integrity (23 codes, uniqueness, lookups, labels)
-- **stt** — retry/backoff math, mock provider modes, factory rules
+- **stt** — mock provider modes and factory rules
 - **llm** — JSON extraction, and an **offline eval set**: Hindi/Hinglish/
   Marathi/Tamil/English utterances asserting intent + tool-call accuracy
 - **weather** — WMO mapping, deterministic mock fallback
@@ -188,4 +188,4 @@ Keys UI. No self-hosted servers.
 
 ---
 
-Built with React, Convex, Sarvam AI, Open-Meteo and the VLY AI gateway.
+Built with React, Convex, browser-native speech, Open-Meteo and a pluggable LLM layer.

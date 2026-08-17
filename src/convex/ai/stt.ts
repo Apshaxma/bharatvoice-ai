@@ -1,13 +1,15 @@
 /**
  * Speech-to-text provider abstraction for BharatVoice AI.
  *
- * The agent pipeline talks to a `SpeechToTextProvider` interface — never to a
- * vendor SDK directly. That keeps the rest of the system testable (mock
- * provider), replaceable (swap Sarvam for another vendor later) and honest
- * about what happens when a provider fails.
+ * Live transcription runs entirely in the browser via the Web Speech API
+ * (SpeechRecognition — see src/lib/voice.ts), so no speech vendor or API key
+ * is involved. This module is the backend fallback layer: a deterministic mock
+ * provider that keeps the recording → upload → transcribe → store pipeline
+ * fully functional offline and in tests, behind a `SpeechToTextProvider`
+ * interface so a real provider can be plugged in later without touching the
+ * rest of the system.
  *
- * This module is intentionally free of Convex imports so it can be unit-tested
- * and driven by evaluation scripts outside the Convex runtime.
+ * Pure module — no Convex imports — so it can be unit-tested.
  */
 
 import {
@@ -51,215 +53,14 @@ export interface SpeechToTextProvider {
   transcribe(request: STTRequest): Promise<STTResult>;
 }
 
-/** Retry policy for transient provider failures. */
-export interface RetryPolicy {
-  maxRetries: number;
-  baseDelayMs: number;
-  maxDelayMs: number;
-  /** Status codes considered transient (retryable). */
-  retryableStatuses: number[];
-}
-
-export const DEFAULT_RETRY_POLICY: RetryPolicy = {
-  maxRetries: 1,
-  baseDelayMs: 400,
-  maxDelayMs: 3000,
-  retryableStatuses: [408, 429, 500, 502, 503, 504],
-};
-
-export function isTransientStatus(status: number, policy: RetryPolicy): boolean {
-  return policy.retryableStatuses.includes(status);
-}
-
-/** Exponential backoff delay for the nth retry (0-indexed). */
-export function backoffDelayMs(attempt: number, policy: RetryPolicy): number {
-  const delay = policy.baseDelayMs * 2 ** attempt;
-  return Math.min(delay, policy.maxDelayMs);
-}
-
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Sarvam AI speech-to-text provider.
+ * Deterministic mock provider — the only backend STT provider today.
  *
- * REST endpoint: POST https://api.sarvam.ai/speech-to-text
- * Authentication: `api-subscription-key` header
- * Models: `saaras:v3` (recommended) / `saaras:v4` (latest, 22 Indic + English)
- *
- * Passing `language_code=unknown` makes the API auto-detect the language and
- * return it alongside `language_probability`, so a single call covers both
- * transcription and language identification.
- */
-export class SarvamSTTProvider implements SpeechToTextProvider {
-  readonly name = "sarvam";
-  readonly model: string;
-  private readonly apiKey: string;
-  private readonly endpoint: string;
-  private readonly timeoutMs: number;
-  private readonly retryPolicy: RetryPolicy;
-
-  constructor(options: {
-    apiKey: string;
-    model?: string;
-    endpoint?: string;
-    timeoutMs?: number;
-    retryPolicy?: RetryPolicy;
-  }) {
-    if (!options.apiKey) throw new Error("SarvamSTTProvider: apiKey is required");
-    this.apiKey = options.apiKey;
-    this.model = options.model ?? "saaras:v3";
-    this.endpoint = options.endpoint ?? "https://api.sarvam.ai/speech-to-text";
-    this.timeoutMs = options.timeoutMs ?? 30_000;
-    this.retryPolicy = options.retryPolicy ?? DEFAULT_RETRY_POLICY;
-  }
-
-  async transcribe(request: STTRequest): Promise<STTResult> {
-    let lastStatus = 0;
-    let lastError: unknown = null;
-
-    for (let attempt = 0; attempt <= this.retryPolicy.maxRetries; attempt++) {
-      if (attempt > 0) {
-        await sleep(backoffDelayMs(attempt - 1, this.retryPolicy));
-      }
-
-      const started = Date.now();
-      try {
-        const result = await this.callOnce(request);
-        result.latencyMs = Date.now() - started;
-        return result;
-      } catch (err) {
-        lastError = err;
-        const status = err instanceof ProviderHttpError ? err.status : 0;
-        lastStatus = status;
-        const retryable =
-          err instanceof ProviderHttpError && isTransientStatus(status, this.retryPolicy);
-        if (!retryable) break;
-      }
-    }
-
-    const latencyMs = 0; // provider never answered
-    const errorType = lastStatus === 0 ? "network" : "provider";
-    return {
-      transcript: "",
-      languageCode: null,
-      languageProbability: null,
-      providerRequestId: null,
-      latencyMs,
-      error: "Speech recognition is temporarily unavailable. Please try again.",
-      errorType,
-    };
-  }
-
-  private async callOnce(request: STTRequest): Promise<STTResult> {
-    const form = new FormData();
-    form.append(
-      "file",
-      new Blob([request.audio as BlobPart], { type: request.mimeType || "application/octet-stream" }),
-      "audio.webm",
-    );
-    form.append("model", this.model);
-    form.append("mode", request.mode);
-    form.append("language_code", request.languageCode ?? "unknown");
-
-    let response: Response;
-    try {
-      response = await fetch(this.endpoint, {
-        method: "POST",
-        headers: {
-          "api-subscription-key": this.apiKey,
-          // Key transport is plain HTTPS; disable Sarvam's optional key encryption.
-          "api-subscription-key-encrypted": "false",
-        },
-        body: form,
-        signal: AbortSignal.timeout(this.timeoutMs),
-      });
-    } catch (err) {
-      const aborted =
-        err instanceof DOMException && (err.name === "TimeoutError" || err.name === "AbortError");
-      if (aborted) {
-        return {
-          transcript: "",
-          languageCode: null,
-          languageProbability: null,
-          providerRequestId: null,
-          latencyMs: 0,
-          error: "Speech recognition timed out. Please try again.",
-          errorType: "timeout",
-        };
-      }
-      throw err; // network failure — handled by the retry loop
-    }
-
-    if (!response.ok) {
-      throw new ProviderHttpError(response.status, await safeResponseText(response));
-    }
-
-    const body = (await response.json().catch(() => null)) as Record<string, unknown> | null;
-    if (!body) {
-      return {
-        transcript: "",
-        languageCode: null,
-        languageProbability: null,
-        providerRequestId: null,
-        latencyMs: 0,
-        error: "Speech recognition returned an unreadable response.",
-        errorType: "provider",
-      };
-    }
-
-    const transcript = typeof body.transcript === "string" ? body.transcript.trim() : "";
-    const languageCode = typeof body.language_code === "string" ? body.language_code : null;
-    const probability =
-      typeof body.language_probability === "number" ? body.language_probability : null;
-    const requestId = typeof body.request_id === "string" ? body.request_id : null;
-
-    if (!transcript) {
-      return {
-        transcript: "",
-        languageCode,
-        languageProbability: probability,
-        providerRequestId: requestId,
-        latencyMs: 0,
-        error: "No speech detected in the audio. Please try again.",
-        errorType: "no_speech",
-      };
-    }
-
-    return {
-      transcript,
-      languageCode,
-      languageProbability: probability,
-      providerRequestId: requestId,
-      latencyMs: 0,
-      error: null,
-      errorType: null,
-    };
-  }
-}
-
-export class ProviderHttpError extends Error {
-  readonly status: number;
-  constructor(status: number, detail: string) {
-    super(`Speech provider returned HTTP ${status}${detail ? `: ${detail}` : ""}`);
-    this.name = "ProviderHttpError";
-    this.status = status;
-  }
-}
-
-async function safeResponseText(response: Response): Promise<string> {
-  try {
-    return (await response.text()).slice(0, 500);
-  } catch {
-    return "";
-  }
-}
-
-/**
- * Deterministic mock provider.
- *
- * Used when MOCK_MODE=true or when no API key is configured, so the full
- * pipeline (recording → upload → action → store → UI) runs without paid APIs
- * and tests never depend on external services.
+ * Used when recording audio needs to be transcribed server-side (browsers
+ * without SpeechRecognition, or the transcription demo), so the full pipeline
+ * (recording → upload → action → store → UI) runs without any speech API.
  *
  * Behavior: returns a realistic weather-query sample for the pinned language
  * (or a rotating selection when auto-detecting), with plausible confidence
@@ -372,24 +173,17 @@ export class MockSTTProvider implements SpeechToTextProvider {
 }
 
 export interface STTProviderConfig {
-  /** Set to true to force the mock provider regardless of credentials. */
-  mockMode: boolean;
-  /** Sarvam API key. Empty means mock fallback. */
-  apiKey: string;
-  /** Override for the Sarvam model id. */
-  model?: string;
+  /** Kept for interface stability — backend STT is mock-only today. */
+  mockMode?: boolean;
 }
 
 /**
- * Provider factory. The rule is simple:
- *   MOCK_MODE=true  → mock
- *   no API key      → mock (app must still run)
- *   otherwise       → Sarvam
+ * Provider factory. Live transcription runs in the browser (Web Speech API);
+ * the backend provider is the deterministic mock so the app needs no speech
+ * vendor or key. A real HTTP provider can be added here later.
  */
-export function createSTTProvider(config: STTProviderConfig): SpeechToTextProvider {
-  const useMock = config.mockMode || !config.apiKey;
-  if (useMock) return new MockSTTProvider();
-  return new SarvamSTTProvider({ apiKey: config.apiKey, model: config.model });
+export function createSTTProvider(_config?: STTProviderConfig): SpeechToTextProvider {
+  return new MockSTTProvider();
 }
 
 /** Number of languages in the registry (used for labels like "23 languages"). */

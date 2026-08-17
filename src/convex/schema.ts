@@ -40,7 +40,7 @@ const schema = defineSchema(
       languageCode: v.optional(v.string()),
       languageProbability: v.optional(v.number()),
       mode: v.string(), // transcribe | codemix | translit | verbatim | translate
-      provider: v.string(), // sarvam | mock
+      provider: v.string(), // mock (browser STT never hits the backend)
       model: v.string(),
       status: v.union(v.literal("success"), v.literal("error")),
       errorType: v.optional(v.string()),

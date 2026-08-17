@@ -10,13 +10,15 @@
  *      executing — human-in-the-loop before any side effect
  *   4. act: safe tools execute (weather via Open-Meteo)
  *   5. answer: LLM responds in the user's language, grounded in tool results
- *   6. speak: TTS (Sarvam Bulbul) when a key is configured, else the browser
- *      synthesizes on the client
+ *   6. speak: the browser synthesizes the answer via speechSynthesis — no TTS
+ *      vendor or API key is involved
  *   7. observe: every step is timed, logged and persisted to `agentRuns` for
  *      the Insights dashboard, including a self-evaluation score.
  *
- * The raw audio from the STT step is already deleted by the transcription
- * service — we only persist text + metadata, never user audio.
+ * Speech is vendor-independent end to end: live transcription runs in the
+ * browser (Web Speech API) and only text + metadata are ever persisted — no
+ * user audio leaves the device, and the upload fallback deletes audio after
+ * transcribing.
  */
 
 import { action } from "./_generated/server";
@@ -30,7 +32,6 @@ import {
   type LLMProvider,
 } from "./ai/llm";
 import { heuristicScore } from "./ai/scoring";
-import { createTTSProvider } from "./ai/tts";
 import { getTool, summarizeToolCall } from "./tools";
 
 const MAX_TOOL_CALLS = 3;
@@ -187,6 +188,9 @@ export const runAgent = action({
       mockMode: isMockMode(),
       apiKey: env("VLY_INTEGRATION_KEY"),
       model: env("AGENT_LLM_MODEL") || undefined,
+      openAiApiKey: env("LLM_API_KEY") || undefined,
+      openAiBaseUrl: env("LLM_BASE_URL") || undefined,
+      openAiModel: env("LLM_MODEL") || undefined,
     });
 
     const plannerMessages: LLMMessage[] = [
@@ -305,40 +309,11 @@ export const runAgent = action({
     const responseText = (answerResult.content || "").trim();
     const responseLanguage = languageCode ?? null;
 
-    // ---- 5. speak (TTS) — only for completed turns ------------------------
-    let audioUrl: string | null = null;
-    let ttsProviderName = "browser";
-    let ttsLatencyMs = 0;
-    if (!hasPendingApprovals && responseText) {
-      const tts = createTTSProvider({
-        mockMode: isMockMode(),
-        apiKey: env("SARVAM_API_KEY"),
-        model: env("SARVAM_TTS_MODEL") || undefined,
-        speaker: env("SARVAM_TTS_SPEAKER") || undefined,
-      });
-      if (tts) {
-        const ttsStarted = Date.now();
-        const synth = await tts.synthesize(
-          responseText,
-          responseLanguage ?? "hi-IN",
-        );
-        ttsLatencyMs = Date.now() - ttsStarted;
-        if (synth.audio) {
-          try {
-            const storageId = await ctx.storage.store(
-              new Blob([Uint8Array.from(synth.audio)], { type: synth.mimeType }),
-            );
-            audioUrl = await ctx.storage.getUrl(storageId);
-            ttsProviderName = synth.provider;
-          } catch {
-            audioUrl = null;
-            ttsProviderName = "browser";
-          }
-        } else {
-          ttsProviderName = "browser";
-        }
-      }
-    }
+    // ---- 5. speak — the client synthesizes the answer with the browser's
+    // speechSynthesis, so no TTS vendor or API key is involved. --------------
+    const audioUrl = null;
+    const ttsProviderName = "browser";
+    const ttsLatencyMs = 0;
 
     const totalLatencyMs = Date.now() - totalStartedAt;
     const failedTurn = !responseText || !!answerResult.error;
@@ -536,6 +511,9 @@ export const resumeApproval = action({
       mockMode: isMockMode(),
       apiKey: env("VLY_INTEGRATION_KEY"),
       model: env("AGENT_LLM_MODEL") || undefined,
+      openAiApiKey: env("LLM_API_KEY") || undefined,
+      openAiBaseUrl: env("LLM_BASE_URL") || undefined,
+      openAiModel: env("LLM_MODEL") || undefined,
     });
 
     const toolResultsJson = JSON.stringify(
@@ -562,39 +540,10 @@ export const resumeApproval = action({
     const responseText = (answerResult.content || "").trim();
     const llmLatencyMs = answerResult.latencyMs;
 
-    let audioUrl: string | null = null;
-    let ttsProviderName = "browser";
-    let ttsLatencyMs = 0;
-    if (responseText) {
-      const tts = createTTSProvider({
-        mockMode: isMockMode(),
-        apiKey: env("SARVAM_API_KEY"),
-        model: env("SARVAM_TTS_MODEL") || undefined,
-        speaker: env("SARVAM_TTS_SPEAKER") || undefined,
-      });
-      if (tts) {
-        const ttsStarted = Date.now();
-        const synth = await tts.synthesize(
-          responseText,
-          run.detectedLanguage ?? "hi-IN",
-        );
-        ttsLatencyMs = Date.now() - ttsStarted;
-        if (synth.audio) {
-          try {
-            const storageId = await ctx.storage.store(
-              new Blob([Uint8Array.from(synth.audio)], { type: synth.mimeType }),
-            );
-            audioUrl = await ctx.storage.getUrl(storageId);
-            ttsProviderName = synth.provider;
-          } catch {
-            audioUrl = null;
-            ttsProviderName = "browser";
-          }
-        } else {
-          ttsProviderName = "browser";
-        }
-      }
-    }
+    // Speech is synthesized client-side (browser speechSynthesis).
+    const audioUrl = null;
+    const ttsProviderName = "browser";
+    const ttsLatencyMs = 0;
 
     const totalLatencyMs = Date.now() - totalStartedAt;
     const eval_ = selfEvaluate({

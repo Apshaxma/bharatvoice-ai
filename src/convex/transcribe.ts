@@ -4,9 +4,10 @@
  * BharatVoice AI — transcription service (v1 scope: multilingual STT).
  *
  * Flow: client uploads audio to Convex storage → calls `transcribeAudio` →
- * the action reads the bytes, runs the configured STT provider (Sarvam or
- * mock), records the result (with language detection + latency), persists it
- * for per-user history, and deletes the raw audio afterwards.
+ * the action reads the bytes, runs the backend STT provider (a deterministic
+ * mock — live transcription happens in the browser via the Web Speech API),
+ * records the result (with language detection + latency), persists it for
+ * per-user history, and deletes the raw audio afterwards.
  *
  * The raw audio is never retained — we keep the transcript and metadata only.
  */
@@ -112,11 +113,9 @@ export const transcribeAudio = action({
     }
 
     // --- run the provider -------------------------------------------------
-    const provider = createSTTProvider({
-      mockMode: isMockMode(),
-      apiKey: env("SARVAM_API_KEY"),
-      model: env("SARVAM_STT_MODEL") || undefined,
-    });
+    // Backend STT is the deterministic mock; live transcription is handled by
+    // the browser's Web Speech API before the agent is even called.
+    const provider = createSTTProvider({ mockMode: isMockMode() });
 
     let stt: STTResult;
     try {
@@ -254,24 +253,18 @@ function fail(requestId: string, errorType: string, errorMessage: string): Trans
 }
 
 /**
- * Runtime info so the UI can show whether it is running live (Sarvam) or in
- * mock mode, and render the language selector from backend config.
+ * Runtime info so the UI can render the language selector from backend config
+ * and explain how speech is handled (browser-native, no vendor involved).
  */
 export const getRuntimeInfo = action({
   args: {},
   handler: async () => {
-    const apiKey = env("SARVAM_API_KEY");
-    const mockMode = isMockMode();
-    const usingMock = mockMode || !apiKey;
     return {
-      mode: usingMock ? "mock" : "live",
-      provider: usingMock ? "mock" : "sarvam",
-      model: usingMock ? "mock-saaras-v3" : env("SARVAM_STT_MODEL") || "saaras:v3",
-      reason: mockMode
-        ? "MOCK_MODE is enabled"
-        : !apiKey
-          ? "SARVAM_API_KEY not configured"
-          : null,
+      mode: "mock",
+      provider: "mock",
+      model: "mock-saaras-v3",
+      reason:
+        "Live transcription runs in the browser (Web Speech API) — the backend STT provider is a deterministic mock for the upload fallback.",
       languages: LANGUAGES,
       modes: MODES,
     };

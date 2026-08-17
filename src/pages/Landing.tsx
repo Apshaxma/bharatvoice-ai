@@ -71,7 +71,7 @@ const PIPELINE = [
   {
     icon: AudioLines,
     title: "Speak",
-    desc: "Text-to-speech in your language — Sarvam Bulbul, or the browser as fallback.",
+    desc: "Text-to-speech in your language — right in the browser, no keys or vendors needed.",
   },
 ];
 
@@ -79,7 +79,7 @@ const FEATURES = [
   {
     icon: Mic,
     title: "Multilingual speech-to-text",
-    desc: "Sarvam Saaras v3 transcribes 22 Indian languages + English with automatic language detection in a single call.",
+    desc: "Browser speech recognition covers 20+ Indian languages + English live, with automatic language detection — no API involved.",
   },
   {
     icon: BrainCircuit,
@@ -103,8 +103,8 @@ const FEATURES = [
   },
   {
     icon: Zap,
-    title: "Provider abstraction",
-    desc: "STT, LLM and TTS sit behind interfaces with retries, backoff and mock fallbacks. Swap vendors without touching the agent.",
+    title: "Vendor-independent",
+    desc: "Speech runs natively in the browser and the LLM is pluggable — any OpenAI-compatible API, the gateway, or fully offline with zero keys.",
   },
 ];
 
@@ -590,12 +590,12 @@ function ExamplesSection() {
 
 function TrustBand() {
   const items = [
-    "Abstraction layer over STT · LLM · TTS",
-    "Retries with exponential backoff",
+    "Abstraction layer over speech + LLM providers",
+    "Vendor-independent: bring your own LLM or run offline",
     "Structured per-run logs & audit trail",
     "Self-evaluation score on every answer",
     "Sensitive actions require approval",
-    "Raw audio deleted — text only stored",
+    "No audio leaves the browser — text only stored",
   ];
   return (
     <section id="trust" className="scroll-mt-20 border-y border-ink/10 bg-ink py-16 text-ivory">
@@ -691,7 +691,7 @@ function Footer() {
           A production-oriented multilingual voice agent for India&apos;s
           languages.
           <br />
-          Convex · Sarvam AI · Open-Meteo · VLY gateway
+          Convex · Browser speech · Open-Meteo · VLY gateway
         </p>
         <div className="flex items-center gap-4">
           <Link

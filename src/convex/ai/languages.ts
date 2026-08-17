@@ -1,9 +1,9 @@
 /**
  * Language registry for BharatVoice AI.
  *
- * Single source of truth for supported languages. Codes follow the BCP-47
- * conventions used by the Sarvam speech-to-text API (Saaras v3 / v4), which
- * covers the 22 scheduled Indian languages plus Indian English.
+ * Single source of truth for supported languages. Codes follow BCP-47 and
+ * match what the browser speech stack and the mock STT provider understand,
+ * covering the 22 scheduled Indian languages plus Indian English.
  *
  * Keeping this in one place means the UI, the provider layer, the mock layer
  * and the evaluation suite all agree on what "supported" means, and adding a
