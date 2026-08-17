@@ -214,7 +214,7 @@ function Navbar() {
                 Sign in
               </Button>
               <Button
-                className="gap-1.5 rounded-full bg-saffron px-4 text-white hover:bg-saffron-bright"
+                className="gap-1.5 rounded-full bg-saffron px-4 text-black hover:bg-saffron-bright"
                 onClick={() =>
                   (window.location.href = "/auth?returnTo=%2Fdashboard")
                 }
@@ -268,7 +268,7 @@ function Hero({ dashboardTarget }: { dashboardTarget: string }) {
           <div className="mt-8 flex flex-wrap items-center gap-3">
             <Button
               size="lg"
-              className="h-12 gap-2 rounded-full bg-saffron px-6 text-white shadow-[inset_0_-3px_0_rgba(0,0,0,0.15)] hover:bg-saffron-bright"
+              className="h-12 gap-2 rounded-full bg-saffron px-6 text-black shadow-[inset_0_-3px_0_rgba(0,0,0,0.15)] hover:bg-saffron-bright"
               onClick={() => (window.location.href = dashboardTarget)}
             >
               <Mic className="size-4" />
@@ -664,7 +664,7 @@ function CtaSection({ dashboardTarget }: { dashboardTarget: string }) {
             <div className="mt-7 flex flex-wrap items-center justify-center gap-3">
               <Button
                 size="lg"
-                className="h-12 gap-2 rounded-full bg-white px-6 font-semibold text-saffron shadow-[inset_0_-3px_0_rgba(0,0,0,0.08)] hover:bg-ivory"
+                className="h-12 gap-2 rounded-full bg-white px-6 font-semibold text-black shadow-[inset_0_-3px_0_rgba(0,0,0,0.08)] hover:bg-ivory"
                 onClick={() => (window.location.href = dashboardTarget)}
               >
                 <Mic className="size-4" />
