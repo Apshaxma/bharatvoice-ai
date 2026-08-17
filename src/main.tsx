@@ -12,7 +12,11 @@ import "./index.css";
 // Lazy load route components for better code splitting
 const Landing = lazy(() => import("./pages/Landing.tsx"));
 const AuthPage = lazy(() => import("./pages/Auth.tsx"));
-const Dashboard = lazy(() => import("./pages/Dashboard.tsx"));
+const DashboardLayout = lazy(() => import("./pages/Dashboard.tsx"));
+const AssistantTab = lazy(() => import("./components/assistant/AssistantTab.tsx"));
+const HistoryTab = lazy(() => import("./components/assistant/HistoryTab.tsx"));
+const InsightsTab = lazy(() => import("./components/assistant/InsightsTab.tsx"));
+const ApprovalsTab = lazy(() => import("./components/assistant/ApprovalsTab.tsx"));
 const NotFound = lazy(() => import("./pages/NotFound.tsx"));
 
 // Simple loading fallback for route transitions
@@ -128,10 +132,15 @@ createRoot(document.getElementById("root")!).render(
                 path="/dashboard"
                 element={
                   <RequireAuth>
-                    <Dashboard />
+                    <DashboardLayout />
                   </RequireAuth>
                 }
-              />
+              >
+                <Route index element={<AssistantTab />} />
+                <Route path="history" element={<HistoryTab />} />
+                <Route path="insights" element={<InsightsTab />} />
+                <Route path="approvals" element={<ApprovalsTab />} />
+              </Route>
               <Route path="*" element={<NotFound />} />
             </Routes>
           </Suspense>

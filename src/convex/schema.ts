@@ -51,6 +51,78 @@ const schema = defineSchema(
       sttLatencyMs: v.number(),
       totalLatencyMs: v.number(),
     }).index("by_user", ["userId"]),
+
+    // One conversation per chat session — the agent's memory.
+    conversations: defineTable({
+      userId: v.optional(v.id("users")),
+      title: v.string(),
+      source: v.string(), // voice | text
+      messageCount: v.number(),
+    }).index("by_user", ["userId"]),
+
+    // Individual user/assistant/tool messages within a conversation.
+    agentMessages: defineTable({
+      conversationId: v.id("conversations"),
+      userId: v.optional(v.id("users")),
+      role: v.union(v.literal("user"), v.literal("assistant"), v.literal("tool")),
+      content: v.string(),
+      languageCode: v.optional(v.string()),
+      toolCalls: v.optional(v.array(v.any())),
+      model: v.optional(v.string()),
+      latencyMs: v.optional(v.number()),
+    })
+      .index("by_conversation", ["conversationId"])
+      .index("by_user", ["userId"]),
+
+    // One row per agent run — the observability backbone: intent, tool calls,
+    // latencies, model usage and self-evaluation score for every turn.
+    agentRuns: defineTable({
+      userId: v.optional(v.id("users")),
+      conversationId: v.optional(v.id("conversations")),
+      requestId: v.string(),
+      inputType: v.string(), // voice | text
+      transcript: v.string(),
+      detectedLanguage: v.optional(v.string()),
+      languageProbability: v.optional(v.number()),
+      intent: v.optional(v.string()),
+      toolCalls: v.optional(v.array(v.any())),
+      responseText: v.optional(v.string()),
+      responseLanguage: v.optional(v.string()),
+      sttLatencyMs: v.optional(v.number()),
+      llmLatencyMs: v.optional(v.number()),
+      toolLatencyMs: v.optional(v.number()),
+      ttsLatencyMs: v.optional(v.number()),
+      totalLatencyMs: v.number(),
+      llmProvider: v.optional(v.string()),
+      llmModel: v.optional(v.string()),
+      ttsProvider: v.optional(v.string()),
+      evalScore: v.optional(v.number()),
+      evalNotes: v.optional(v.string()),
+      status: v.union(
+        v.literal("success"),
+        v.literal("error"),
+        v.literal("pending_approval"),
+      ),
+      errorType: v.optional(v.string()),
+      errorMessage: v.optional(v.string()),
+    })
+      .index("by_user", ["userId"])
+      .index("by_conversation", ["conversationId"]),
+
+    // Human-in-the-loop queue. Sensitive tool calls land here and only run
+    // after the user explicitly approves them.
+    approvals: defineTable({
+      userId: v.optional(v.id("users")),
+      conversationId: v.optional(v.id("conversations")),
+      runId: v.optional(v.id("agentRuns")),
+      toolName: v.string(),
+      args: v.any(),
+      summary: v.string(),
+      status: v.union(v.literal("pending"), v.literal("approved"), v.literal("denied")),
+      decidedAt: v.optional(v.number()),
+    })
+      .index("by_user", ["userId"])
+      .index("by_status", ["status"]),
   },
   {
     schemaValidation: false,

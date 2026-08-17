@@ -1,0 +1,380 @@
+/**
+ * LLM provider abstraction for BharatVoice AI.
+ *
+ * The agent talks to an `LLMProvider` interface — never to a vendor SDK
+ * directly. That keeps the pipeline testable (deterministic mock), replaceable
+ * (swap the gateway for a direct vendor SDK) and honest about failures.
+ *
+ * This module is free of Convex imports so it can be unit-tested outside the
+ * Convex runtime.
+ */
+
+import { vly } from "../../lib/vly-integrations";
+
+export interface LLMMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+export interface LLMResult {
+  content: string;
+  latencyMs: number;
+  provider: string;
+  model: string;
+  promptTokens?: number;
+  completionTokens?: number;
+  /** Non-null when the provider call itself failed. */
+  error: string | null;
+}
+
+export interface LLMOptions {
+  temperature?: number;
+  maxTokens?: number;
+}
+
+export interface LLMProvider {
+  readonly name: string;
+  readonly model: string;
+  complete(
+    messages: LLMMessage[],
+    options?: LLMOptions,
+  ): Promise<LLMResult>;
+}
+
+/** Strip markdown fences / stray prose so `JSON.parse` survives LLM output. */
+export function extractJson(text: string): string {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fenced ? fenced[1] : text;
+  const start = candidate.indexOf("{");
+  const end = candidate.lastIndexOf("}");
+  if (start === -1 || end === -1 || end <= start) return candidate.trim();
+  return candidate.slice(start, end + 1);
+}
+
+/** Parse LLM JSON output safely; returns null when unparseable. */
+export function parseLlmJson<T>(text: string): T | null {
+  try {
+    return JSON.parse(extractJson(text)) as T;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Production provider — routes through the VLY AI gateway (OpenAI-compatible)
+ * so the app gets many models without managing vendor keys. Model ids follow
+ * the Vercel AI gateway convention, e.g. "gpt-5-mini" or "claude-sonnet-4-5".
+ */
+export class VlyLLMProvider implements LLMProvider {
+  readonly name = "vly-gateway";
+  readonly model: string;
+
+  constructor(model: string) {
+    this.model = model;
+  }
+
+  async complete(
+    messages: LLMMessage[],
+    options: LLMOptions = {},
+  ): Promise<LLMResult> {
+    const started = Date.now();
+    const result = await vly.ai.completion({
+      model: this.model,
+      messages: messages.map((m) => ({ role: m.role, content: m.content })),
+      temperature: options.temperature ?? 0.4,
+      maxTokens: options.maxTokens ?? 700,
+    });
+    const latencyMs = Date.now() - started;
+
+    if (!result.success || !result.data) {
+      return {
+        content: "",
+        latencyMs,
+        provider: this.name,
+        model: this.model,
+        error: result.error || "LLM request failed",
+      };
+    }
+
+    const choice = result.data.choices?.[0];
+    const content = choice?.message?.content ?? "";
+    return {
+      content,
+      latencyMs,
+      provider: this.name,
+      model: this.model,
+      promptTokens: result.data.usage?.promptTokens,
+      completionTokens: result.data.usage?.completionTokens,
+      error: content ? null : "LLM returned an empty response",
+    };
+  }
+}
+
+/**
+ * Deterministic mock brain used when MOCK_MODE=true or no gateway key is set.
+ * It understands the demo vertical (weather + a sensitive "book cab" action)
+ * across the supported languages, so the whole pipeline runs offline and tests
+ * never depend on external services.
+ */
+export class MockLLMProvider implements LLMProvider {
+  readonly name = "mock-llm";
+  readonly model = "mock-bharat-1b";
+
+  private readonly cities: { name: string; aliases: string[] }[] = [
+    { name: "Mumbai", aliases: ["mumbai", "मुंबई", "बॉम्बे", "bombay", "मुम्बई"] },
+    { name: "Pune", aliases: ["pune", "पुणे", "पुना"] },
+    { name: "Delhi", aliases: ["delhi", "दिल्ली", "dilli"] },
+    { name: "Bengaluru", aliases: ["bengaluru", "bangalore", "बेंगलुरु", "बेंगलूरु", "ಬೆಂಗಳೂರು"] },
+    { name: "Chennai", aliases: ["chennai", "चेन्नई", "madras", "मद्रास"] },
+    { name: "Kolkata", aliases: ["kolkata", "कोलकाता", "calcutta", "कलकत्ता"] },
+    { name: "Hyderabad", aliases: ["hyderabad", "हैदराबाद"] },
+    { name: "Jaipur", aliases: ["jaipur", "जयपुर"] },
+    { name: "Ahmedabad", aliases: ["ahmedabad", "अहमदाबाद"] },
+    { name: "Goa", aliases: ["goa", "गोवा"] },
+  ];
+
+  private readonly weatherWords = [
+    "weather", "mausam", "मौसम", "मौसम", "barish", "बारिश", "बरसात", "rain", "paani",
+    "पानी", "paus", "पाऊस", "varsham", "వర్షం", "mazhai", "மழை", "brishti", "বৃষ্টি",
+    "male", "ಮಳೆ", "varsaadh", "વરસાદ", "meenh", "ਮੀਂਹ", "mazha", "മഴ", "temperature",
+    "गर्मी", "thandi", "ठंड", "forecast", "पूर्वानुमान", "गरम", "heat", "sardi",
+  ];
+
+  private readonly cabWords = [
+    "cab", "taxi", "कैब", "कॅब", "टैक्सी", "book a ride", "ride", "ओला", "uber",
+    "ola", "drop me", "pick me", "car book", "कार बुक", "कॅब बुक", "वाहन",
+  ];
+
+  private readonly dateWords = [
+    { key: "today", words: ["today", "aaj", "आज", "आज", "aadu", "ఈరోజు", "இன்று", "आजच"] },
+    { key: "tomorrow", words: ["tomorrow", "kal", "कल", "उद्या", "नाळे", "రేపు", "நாளை", "আগামীকাল", "ಇನ್ನು", "नाश्ता"] },
+  ];
+
+  private readonly intents: Record<string, string> = {
+    weather: "weather_query",
+    cab: "book_cab",
+  };
+
+  complete(
+    messages: LLMMessage[],
+    _options: LLMOptions = {},
+  ): Promise<LLMResult> {
+    // Simulate provider latency so latency instrumentation is exercised.
+    const latencyMs = 180 + Math.random() * 220;
+    const system = messages.find((m) => m.role === "system")?.content ?? "";
+    const lastUser = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
+
+    const wantsPlan = system.includes("PLANNER");
+    const wantsAnswer = system.includes("RESPONDER");
+
+    let content: string;
+    if (wantsPlan) {
+      content = JSON.stringify(this.plan(lastUser));
+    } else if (wantsAnswer) {
+      content = this.answer(lastUser, system);
+    } else {
+      content = "मैं यहाँ हूँ। बताइए, मैं कैसे मदद कर सकता हूँ?";
+    }
+
+    return Promise.resolve({
+      content,
+      latencyMs,
+      provider: this.name,
+      model: this.model,
+      promptTokens: messages.reduce((n, m) => n + m.content.length, 0),
+      completionTokens: content.length,
+      error: null,
+    });
+  }
+
+  /** Mock planner: deterministic intent + tool-call extraction. */
+  private plan(text: string): {
+    intent: string;
+    toolCalls: { name: string; args: Record<string, unknown> }[];
+  } {
+    const lower = text.toLowerCase();
+    const city = this.cities.find((c) =>
+      c.aliases.some((a) => lower.includes(a.toLowerCase())),
+    );
+    const date = this.resolveDate(lower);
+
+    const wantsWeather = this.weatherWords.some((w) => lower.includes(w));
+    const wantsCab = this.cabWords.some((w) => lower.includes(w));
+
+    const toolCalls: { name: string; args: Record<string, unknown> }[] = [];
+    if (wantsWeather) {
+      toolCalls.push({
+        name: "getWeather",
+        args: {
+          city: city?.name ?? "Mumbai",
+          date: date ?? "today",
+        },
+      });
+    }
+    if (wantsCab) {
+      toolCalls.push({
+        name: "bookCab",
+        args: {
+          from: city?.name ?? "Mumbai",
+          to: "Pune",
+          when: date ?? "today",
+        },
+      });
+    }
+
+    const intent = wantsWeather
+      ? this.intents.weather
+      : wantsCab
+        ? this.intents.cab
+        : "general_chat";
+
+    return { intent, toolCalls };
+  }
+
+  private resolveDate(lower: string): string | null {
+    for (const entry of this.dateWords) {
+      if (entry.words.some((w) => lower.includes(w))) return entry.key;
+    }
+    return null;
+  }
+
+  /** Mock responder: template answer in the detected language using tool data. */
+  private answer(userText: string, systemText: string): string {
+    const lower = userText.toLowerCase();
+    const language = this.detectLanguage(userText);
+
+    // Tool results are injected into the system prompt by the agent (JSON),
+    // as an array of { tool, args, status, result } entries.
+    const context = `${userText}\n${systemText}`;
+    const resultMatch = context.match(
+      /__TOOL_RESULT__\s*([\s\S]*?)(?:__END__|$)/,
+    );
+    let entries: {
+      tool?: string;
+      status?: string;
+      result?: Record<string, unknown> | null;
+    }[] = [];
+    if (resultMatch) {
+      try {
+        const parsed = JSON.parse(resultMatch[1].trim());
+        if (Array.isArray(parsed)) entries = parsed;
+      } catch {
+        // malformed tool result — fall through to generic answers
+      }
+    }
+
+    const weatherEntry = entries.find(
+      (e) => e.tool === "getWeather" && e.status === "done",
+    );
+    const cabEntry = entries.find((e) => e.tool === "bookCab");
+
+    const city = this.cities.find((c) =>
+      c.aliases.some((a) => lower.includes(a.toLowerCase())),
+    )?.name ?? "Mumbai";
+    const date = this.resolveDate(lower) === "tomorrow" ? "tomorrow" : "today";
+
+    if (weatherEntry?.result && weatherEntry.result.temperatureMax !== undefined) {
+      return this.weatherAnswer(language, city, date, weatherEntry.result);
+    }
+    if (cabEntry) {
+      if (cabEntry.status === "skipped_user_denied") {
+        return this.cabDeniedAnswer(language);
+      }
+      return this.cabAnswer(language, city);
+    }
+    if (this.cabWords.some((w) => lower.includes(w))) {
+      return this.cabAnswer(language, city);
+    }
+    return this.greetingAnswer(language, city);
+  }
+
+  private cabDeniedAnswer(lang: string): string {
+    const byLang: Record<string, string> = {
+      "hi-IN": "ठीक है, मैंने कैब बुकिंग रद्द कर दी है। किसी और चीज़ में मदद चाहिए तो बताइए।",
+      "mr-IN": "ठीक आहे, मी कॅब बुकिंग रद्द केली आहे. आणखी काही हवे असल्यास सांगा.",
+      "en-IN": "Okay, I've cancelled the cab booking. Let me know if you need anything else.",
+    };
+    return byLang[lang] ?? byLang["en-IN"];
+  }
+
+  private weatherAnswer(
+    lang: string,
+    city: string,
+    date: string,
+    r: Record<string, unknown>,
+  ): string {
+    const tMax = r.temperatureMax ?? r.tempMax ?? 28;
+    const tMin = r.temperatureMin ?? r.tempMin ?? 21;
+    const precip = r.precipitationProbability ?? r.precip ?? 40;
+    const desc = (r.description as string) ?? "partly cloudy";
+
+    const byLang: Record<string, string> = {
+      "hi-IN": `कल ${city} में मौसम साफ़ रहेगा। अधिकतम तापमान ${tMax}°C और न्यूनतम ${tMin}°C रहेगा। बारिश की संभावना ${precip}% है। ${desc === "rain" ? "छाता साथ रखें!" : "मौसम यात्रा के लिए ठीक रहेगा।"}`,
+      "mr-IN": `उद्या ${city} मध्ये हवामान चांगले राहील. कमाल तापमान ${tMax}°C आणि किमान ${tMin}°C असेल. पावसाची शक्यता ${precip}% आहे.`,
+      "ta-IN": `நாளை ${city} இல் வானிலை நன்றாக இருக்கும். அதிகபட்சம் ${tMax}°C, குறைந்தபட்சம் ${tMin}°C. மழை வாய்ப்பு ${precip}%.`,
+      "te-IN": `రేపు ${city} లో వాతావరణం బాగుంటుంది. గరిష్టం ${tMax}°C, కనిష్టం ${tMin}°C. వర్షం అవకాశం ${precip}%.`,
+      "bn-IN": `আগামীকাল ${city} তে আবহাওয়া ভালো থাকবে। সর্বোচ্চ ${tMax}°C, সর্বনিম্ন ${tMin}°C। বৃষ্টির সম্ভাবনা ${precip}%।`,
+      "kn-IN": `ನಾಳೆ ${city} ನಲ್ಲಿ ಹವಾಮಾನ ಚೆನ್ನಾಗಿರುತ್ತದೆ. ಗರಿಷ್ಠ ${tMax}°C, ಕನಿಷ್ಠ ${tMin}°C. ಮಳೆಯ ಸಂಭವ ${precip}%.`,
+      "gu-IN": `આવતીકાલે ${city} માં હવામાન સારું રહેશે. મહત્તમ ${tMax}°C, લઘુત્તમ ${tMin}°C. વરસાદની શક્યતા ${precip}%.`,
+      "pa-IN": `ਕੱਲ੍ਹ ${city} ਵਿੱਚ ਮੌਸਮ ਵਧੀਆ ਰਹੇਗਾ। ਵੱਧ ਤੋਂ ਵੱਧ ${tMax}°C, ਘੱਟੋ ਘੱਟ ${tMin}°C। ਮੀਂਹ ਦੀ ਸੰਭਾਵਨਾ ${precip}%.`,
+      "ml-IN": `നാളെ ${city} യിൽ കാലാവസ്ഥ നല്ലതായിരിക്കും. പരമാവധി ${tMax}°C, കുറഞ്ഞത് ${tMin}°C. മഴ സാധ്യത ${precip}%.`,
+    };
+    const template =
+      byLang[lang] ??
+      `Tomorrow in ${city} the weather will be clear. High of ${tMax}°C and low of ${tMin}°C, with a ${precip}% chance of rain. Good weather for the trip.`;
+    return `${template} ${date === "today" ? "" : ""}`.trim();
+  }
+
+  private cabAnswer(lang: string, city: string): string {
+    const byLang: Record<string, string> = {
+      "hi-IN": `मैंने ${city} से पुणे के लिए कैब बुक कर दी है। ड्राइवर 4 मिनट में पहुँचेंगे, किराया लगभग ₹1,240 होगा। यात्रा शुभ हो!`,
+      "mr-IN": `${city} ते पुणेसाठी कॅब बुक केली आहे. ड्रायव्हर ४ मिनिटांत पोहोचेल, भाडे सुमारे ₹१,२४० असेल.`,
+      "en-IN": `I've booked your cab from ${city} to Pune. The driver will arrive in about 4 minutes and the fare is approximately ₹1,240. Safe travels!`,
+    };
+    return byLang[lang] ?? byLang["en-IN"];
+  }
+
+  private greetingAnswer(lang: string, city: string): string {
+    const byLang: Record<string, string> = {
+      "hi-IN": `नमस्ते! मैं आपका भारतवॉइस सहायक हूँ। आप मुझसे मौसम, कैब बुकिंग या किसी भी सवाल के लिए बात कर सकते हैं। ${city} के बारे में पूछिए!`,
+      "mr-IN": `नमस्कार! मी तुमचा भारतवॉइस सहायक आहे. मला हवामान, कॅब बुकिंग किंवा इतर काहीही विचारा.`,
+      "en-IN": `Hello! I'm your BharatVoice assistant. Ask me about the weather in ${city}, book a cab, or anything else — in Hindi, Marathi, Tamil and 20 more Indian languages.`,
+    };
+    return byLang[lang] ?? byLang["en-IN"];
+  }
+
+  /** Best-effort language detection from script + keywords for the mock. */
+  private detectLanguage(text: string): string {
+    if (/[తెలుగు\u0C00-\u0C7F]/.test(text)) return "te-IN";
+    if (/[\u0B80-\u0BFF]/.test(text)) return "ta-IN";
+    if (/[\u0980-\u09FF]/.test(text)) return "bn-IN";
+    if (/[\u0C80-\u0CFF]/.test(text)) return "kn-IN";
+    if (/[\u0D00-\u0D7F]/.test(text)) return "ml-IN";
+    if (/[\u0A80-\u0AFF]/.test(text)) return "gu-IN";
+    if (/[\u0A00-\u0A7F]/.test(text)) return "pa-IN";
+    // Marathi keywords first — Devanagari alone could be Hindi or Marathi.
+    if (/कॅब|उद्या|पाऊस|हवामान/.test(text)) return "mr-IN";
+    if (/[\u0900-\u097F]/.test(text)) return "hi-IN";
+    return "en-IN";
+  }
+}
+
+export interface LLMProviderConfig {
+  mockMode: boolean;
+  /** Gateway deployment token (VLY_INTEGRATION_KEY). Empty → mock. */
+  apiKey: string;
+  /** Model id on the AI gateway, e.g. "gpt-5-mini". */
+  model?: string;
+}
+
+/**
+ * Provider factory. The rule is simple:
+ *   MOCK_MODE=true        → mock (offline demo/tests)
+ *   no gateway key        → mock (app must still run)
+ *   otherwise             → VLY gateway
+ */
+export function createLLMProvider(config: LLMProviderConfig): LLMProvider {
+  const useMock = config.mockMode || !config.apiKey;
+  if (useMock) return new MockLLMProvider();
+  return new VlyLLMProvider(config.model ?? "gpt-5-mini");
+}
