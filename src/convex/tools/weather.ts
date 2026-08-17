@@ -31,7 +31,7 @@ export function describeWeatherCode(code: number): string {
   if (code >= 71 && code <= 77) return "snow";
   if (code >= 80 && code <= 82) return "rain showers";
   if (code >= 85 && code <= 86) return "snow showers";
-  if (code >= 95) return "thunderstorm";
+  if (code >= 95 && code <= 99) return "thunderstorm";
   return "unknown";
 }
 

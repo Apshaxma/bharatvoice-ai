@@ -51,10 +51,17 @@ export function extractJson(text: string): string {
   return candidate.slice(start, end + 1);
 }
 
-/** Parse LLM JSON output safely; returns null when unparseable. */
+/**
+ * Parse LLM JSON output safely; returns null when unparseable or when the
+ * result is not a JSON object (arrays/primitives can't be a tool plan).
+ */
 export function parseLlmJson<T>(text: string): T | null {
   try {
-    return JSON.parse(extractJson(text)) as T;
+    const parsed = JSON.parse(extractJson(text)) as unknown;
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed as T;
   } catch {
     return null;
   }

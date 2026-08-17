@@ -1,272 +1,166 @@
-## Overview
+# BharatVoice AI
 
-This project uses the following tech stack:
-- Vite
-- Typescript
-- React Router v7 (all imports from `react-router` instead of `react-router-dom`)
-- React 19 (for frontend components)
-- Tailwind v4 (for styling)
-- Shadcn UI (for UI components library)
-- Lucide Icons (for icons)
-- Convex (for backend & database)
-- Convex Auth (for authentication)
-- Framer Motion (for animations)
-- Three js (for 3d models)
+> A production-oriented multilingual voice agent built for India's languages.
 
-All relevant files live in the 'src' directory.
+Speak in Hindi, Marathi, Tamil, Telugu, Bengali or English — BharatVoice
+**detects the language, transcribes the speech, plans an action, calls real
+tools** (live weather, gated cab bookings), **answers in your language** and
+**speaks the answer back**, while logging every stage and scoring its own
+performance.
 
-Use bun for the package manager.
+Built to demonstrate production AI-agent engineering: provider abstraction,
+retries and backoff, deterministic offline mocks, human-in-the-loop safety,
+per-run observability, and runtime self-evaluation.
 
-## Setup
+## The 15-point pipeline
 
-This project is set up already and running on a cloud environment, as well as a convex development in the sandbox.
+Every turn runs: **listen → detect language → transcribe → understand intent →
+maintain conversation memory → decide tools → call tools (gated by approval
+policy) → generate answer → translate/answer in the user's language → convert
+to speech → play it back → self-evaluate → log latency/tools/models → require
+human approval for sensitive actions → stay deployable as a real app.**
 
-## Environment Variables
-
-The project is set up with project specific CONVEX_DEPLOYMENT and VITE_CONVEX_URL environment variables on the client side.
-
-The convex server has a separate set of environment variables that are accessible by the convex backend.
-
-Currently, these variables include auth-specific keys: JWKS, JWT_PRIVATE_KEY, and SITE_URL.
-
-
-# Using Authentication (Important!)
-
-You must follow these conventions when using authentication.
-
-## Auth is already set up.
-
-All convex authentication functions are already set up. The auth currently uses email OTP and anonymous users, but can support more.
-
-The email OTP configuration is defined in `src/convex/auth/emailOtp.ts`. DO NOT MODIFY THIS FILE.
-
-Also, DO NOT MODIFY THESE AUTH FILES: `src/convex/auth.config.ts` and `src/convex/auth.ts`.
-
-## Using Convex Auth on the backend
-
-On the `src/convex/users.ts` file, you can use the `getCurrentUser` function to get the current user's data.
-
-## Using Convex Auth on the frontend
-
-The `/auth` page is already set up to use auth. Navigate to `/auth` for all log in / sign up sequences.
-
-You MUST use this hook to get user data. Never do this yourself without the hook:
-```typescript
-import { useAuth } from "@/hooks/use-auth";
-
-const { isLoading, isAuthenticated, user, signIn, signOut } = useAuth();
-```
-
-## Protected Routes
-
-The starter `/dashboard` route is protected with `RequireAuth`, which sends
-signed-out users to `/auth?returnTo=<current route>`. Extend that page for the
-product's authenticated experience, and reuse `RequireAuth` when adding another
-protected route.
-
-## Auth Page
-
-The auth page is defined in `src/pages/Auth.tsx`. Send sign-in and sign-up actions
-to `/auth`.
-
-## Authorization
-
-You can perform authorization checks on the frontend and backend.
-
-On the frontend, you can use the `useAuth` hook to get the current user's data and authentication state.
-
-You should also be protecting queries, mutations, and actions at the base level, checking for authorization securely.
-
-## Adding a redirect after auth
-
-The `/auth` route in `src/main.tsx` redirects to `/dashboard` by default. If the
-product's main authenticated route is different, update `redirectAfterAuth` to
-that route. A validated same-origin `returnTo` query parameter takes priority so
-users can resume the protected page they originally requested. Never leave an
-authenticated product redirecting back to the public landing page.
-
-## Complete authenticated products
-
-When the requested product implies accounts, a workspace, a dashboard, or other
-signed-in functionality, the task is not complete with only a landing page and
-auth form. Build the main authenticated experience, protect its route, and verify
-that signing in reaches it.
-
-# Frontend Conventions
-
-You will be using the Vite frontend with React 19, Tailwind v4, and Shadcn UI.
-
-Generally, pages should be in the `src/pages` folder, and components should be in the `src/components` folder.
-
-Shadcn primitives are located in the `src/components/ui` folder and should be used by default.
-
-## Page routing
-
-Your page component should go under the `src/pages` folder.
-
-When adding a page, update the react router configuration in `src/main.tsx` to include the new route you just added.
-
-## Shad CN conventions
-
-Follow these conventions when using Shad CN components, which you should use by default.
-- Remember to use "cursor-pointer" to make the element clickable
-- For title text, use the "tracking-tight font-bold" class to make the text more readable
-- Always make apps MOBILE RESPONSIVE. This is important
-- AVOID NESTED CARDS. Try and not to nest cards, borders, components, etc. Nested cards add clutter and make the app look messy.
-- AVOID SHADOWS. Avoid adding any shadows to components. stick with a thin border without the shadow.
-- Avoid skeletons; instead, use the loader2 component to show a spinning loading state when loading data.
-
-
-## Landing Pages
-
-You must always create good-looking designer-level styles to your application. 
-- Make it well animated and fit a certain "theme", ie neo brutalist, retro, neumorphism, glass morphism, etc
-
-Use known images and emojis from online.
-
-If the user is logged in already, show the get started button to say "Dashboard" or "Profile" instead to take them there.
-
-## Responsiveness and formatting
-
-Make sure pages are wrapped in a container to prevent the width stretching out on wide screens. Always make sure they are centered aligned and not off-center.
-
-Always make sure that your designs are mobile responsive. Verify the formatting to ensure it has correct max and min widths as well as mobile responsiveness.
-
-- Always create sidebars for protected dashboard pages and navigate between pages
-- Always create navbars for landing pages
-- On these bars, the created logo should be clickable and redirect to the index page
-
-## Animating with Framer Motion
-
-You must add animations to components using Framer Motion. It is already installed and configured in the project.
-
-To use it, import the `motion` component from `framer-motion` and use it to wrap the component you want to animate.
-
-
-### Other Items to animate
-- Fade in and Fade Out
-- Slide in and Slide Out animations
-- Rendering animations
-- Button clicks and UI elements
-
-Animate for all components, including on landing page and app pages.
-
-## Three JS Graphics
-
-Your app comes with three js by default. You can use it to create 3D graphics for landing pages, games, etc.
-
-
-## Colors
-
-You can override colors in: `src/index.css`
-
-This uses the oklch color format for tailwind v4.
-
-Always use these color variable names.
-
-Make sure all ui components are set up to be mobile responsive and compatible with both light and dark mode.
-
-Set theme using `dark` or `light` variables at the parent className.
-
-## Styling and Theming
-
-When changing the theme, always change the underlying theme of the shad cn components app-wide under `src/components/ui` and the colors in the index.css file.
-
-Avoid hardcoding in colors unless necessary for a use case, and properly implement themes through the underlying shad cn ui components.
-
-When styling, ensure buttons and clickable items have pointer-click on them (don't by default).
-
-Always follow a set theme style and ensure it is tuned to the user's liking.
-
-## Toasts
-
-You should always use toasts to display results to the user, such as confirmations, results, errors, etc.
-
-Use the shad cn Sonner component as the toaster. For example:
+## Architecture
 
 ```
-import { toast } from "sonner"
-
-import { Button } from "@/components/ui/button"
-export function SonnerDemo() {
-  return (
-    <Button
-      variant="outline"
-      onClick={() =>
-        toast("Event has been created", {
-          description: "Sunday, December 03, 2023 at 9:00 AM",
-          action: {
-            label: "Undo",
-            onClick: () => console.log("Undo"),
-          },
-        })
-      }
-    >
-      Show Toast
-    </Button>
-  )
-}
+Browser (React 19 + Vite)
+  ├─ MediaRecorder (WebM/Opus) ────────────┐
+  ├─ speechSynthesis (browser TTS fallback) │
+  └─ Assistant UI (chat + pipeline trace)   │
+                                           ▼
+┌──────────────────────────────────────────────────────┐
+│ Convex backend                                        │
+│  audio.ts          → storage upload URL               │
+│  transcribe.ts     → STT action (Sarvam Saaras | mock)│
+│  agent.ts          → runAgent / resumeApproval        │
+│  ai/stt.ts         → SpeechToTextProvider abstraction │
+│  ai/llm.ts         → LLMProvider (VLY gateway | mock) │
+│  ai/tts.ts         → TTSProvider (Sarvam Bulbul)      │
+│  tools/*           → registry + weather (Open-Meteo)  │
+│  agentDb.ts        → conversations, runs, approvals   │
+└──────────────┬───────────────────────────────────────┘
+               │
+   ┌───────────┼───────────────┐
+   ▼           ▼               ▼
+ Open-Meteo  VLY AI gateway  Sarvam AI (STT/TTS)
 ```
 
-Remember to import { toast } from "sonner". Usage: `toast("Event has been created.")`
+### One turn, end to end
 
-## Dialogs
+1. **Listen** — `MediaRecorder` captures audio; bytes are PUT to Convex storage.
+2. **Transcribe** — the `transcribeAudio` action calls Sarvam Saaras (or the
+   deterministic mock) with `language_code=unknown`, so one call returns the
+   transcript **and** the detected language with confidence. Raw audio is
+   deleted immediately — only text + metadata are stored.
+3. **Understand** — a *planner* LLM call classifies intent and declares needed
+   tools as strict JSON.
+4. **Gate** — tool calls are checked against the registry. Safe tools
+   (`getWeather`) run; sensitive tools (`bookCab`) become approval requests and
+   **never execute without your explicit decision**.
+5. **Act** — safe tools run (Open-Meteo geocoding + forecast, with a mock
+   fallback so the agent never crashes on network failure).
+6. **Answer** — a *responder* LLM call writes 1–3 spoken-friendly sentences in
+   the detected language, grounded in tool results.
+7. **Speak** — Sarvam Bulbul TTS (or browser `speechSynthesis` when no key is
+   set) plays the answer.
+8. **Observe** — per-stage latency, intent, tool calls, model usage and a
+   self-evaluation score persist to `agentRuns` and surface in the **Insights**
+   tab.
 
-Always ensure your larger dialogs have a scroll in its content to ensure that its content fits the screen size. Make sure that the content is not cut off from the screen.
+## Tech stack
 
-Ideally, instead of using a new page, use a Dialog instead. 
+- **Frontend:** React 19 · Vite · TypeScript · Tailwind v4 · shadcn/ui · Framer Motion · Lucide
+- **Backend & DB:** Convex (actions, queries, storage, reactive subscriptions)
+- **Auth:** Convex Auth (email OTP + anonymous)
+- **Speech-to-text:** Sarvam AI `saaras:v3` (22 Indic + English, auto language detection)
+- **Text-to-speech:** Sarvam AI `bulbul:v3` → browser synthesis fallback
+- **LLM:** VLY AI gateway (OpenAI-compatible, many models behind one key) → deterministic mock fallback
+- **Weather:** Open-Meteo (free, no key)
+- **Tests:** Bun's built-in runner — `bun test`
 
-# Using the Convex backend
+## Repository layout
 
-You will be implementing the convex backend. Follow your knowledge of convex and the documentation to implement the backend.
-
-## The Convex Schema
-
-You must correctly follow the convex schema implementation.
-
-The schema is defined in `src/convex/schema.ts`.
-
-Do not include the `_id` and `_creationTime` fields in your queries (it is included by default for each table).
-Do not index `_creationTime` as it is indexed for you. Never have duplicate indexes.
-
-
-## Convex Actions: Using CRUD operations
-
-When running anything that involves external connections, you must use a convex action with "use node" at the top of the file.
-
-You cannot have queries or mutations in the same file as a "use node" action file. Thus, you must use pre-built queries and mutations in other files.
-
-You can also use the pre-installed internal crud functions for the database:
-
-```ts
-// in convex/users.ts
-import { crud } from "convex-helpers/server/crud";
-import schema from "./schema.ts";
-
-export const { create, read, update, destroy } = crud(schema, "users");
-
-// in some file, in an action:
-const user = await ctx.runQuery(internal.users.read, { id: userId });
-
-await ctx.runMutation(internal.users.update, {
-  id: userId,
-  patch: {
-    status: "inactive",
-  },
-});
+```
+src/
+  convex/
+    ai/          language registry, STT/LLM/TTS provider abstractions (+ mocks)
+    tools/       tool registry, weather tool, approval policy
+    agent.ts     the agent pipeline (runAgent, resumeApproval)
+    agentDb.ts   conversations, messages, runs, metrics, approvals
+    transcribe.ts, audio.ts   transcription service + upload URL
+    schema.ts    auth tables + product tables
+  components/assistant/  Assistant chat · pipeline trace · approvals · history · insights
+  pages/         Landing · Auth · Dashboard layout · NotFound
+  lib/voice.ts   MediaRecorder capture + browser speech synthesis
+tests/           unit + offline eval suite (bun test)
+PROJECT_PLAN.md  goals, architecture, risks, testing/eval/deployment strategy
 ```
 
+## Getting started
 
-## Common Convex Mistakes To Avoid
+```bash
+bun install
+bun convex dev        # local Convex dev (codegen)
+bun dev               # Vite dev server
+bun test              # unit + offline eval suite
+bun tsc -b --noEmit   # typecheck
+```
 
-When using convex, make sure:
-- Document IDs are referenced as `_id` field, not `id`.
-- Document ID types are referenced as `Id<"TableName">`, not `string`.
-- Document object types are referenced as `Doc<"TableName">`.
-- Keep schemaValidation to false in the schema file.
-- You must correctly type your code so that it passes the type checker.
-- You must handle null / undefined cases of your convex queries for both frontend and backend, or else it will throw an error that your data could be null or undefined.
-- Always use the `@/folder` path, with `@/convex/folder/file.ts` syntax for importing convex files.
-- This includes importing generated files like `@/convex/_generated/server`, `@/convex/_generated/api`
-- Remember to import functions like useQuery, useMutation, useAction, etc. from `convex/react`
-- NEVER have return type validators.
+### Environment variables (set via the platform's Keys UI, never `.env`)
+
+| Variable | Purpose | Required |
+|---|---|---|
+| `VLY_INTEGRATION_KEY` | LLM gateway token (auto-injected) | auto |
+| `SARVAM_API_KEY` | Sarvam speech-to-text **and** text-to-speech | no* |
+| `SARVAM_STT_MODEL` | e.g. `saaras:v3` / `saaras:v4` | no |
+| `SARVAM_TTS_MODEL` | e.g. `bulbul:v3` | no |
+| `SARVAM_TTS_SPEAKER` | e.g. `shubh` | no |
+| `AGENT_LLM_MODEL` | e.g. `gpt-5-mini` / `claude-sonnet-4-5` | no |
+| `MOCK_MODE` | `true` forces every provider to its mock | no |
+
+\* Without `SARVAM_API_KEY` the app runs fully in **mock mode**: STT returns
+realistic sample utterances, the LLM planner/responder are deterministic, and
+answers are spoken by the browser. The UI reports the active mode via
+`getRuntimeInfo`.
+
+## Human-in-the-loop
+
+Sensitive actions (cab bookings) land in the **Approvals** tab as pending
+requests. Approving executes the tool and resumes the turn (the responder
+answers grounded in the real result); denying acknowledges the cancellation —
+the sensitive tool's result is never fabricated.
+
+## Observability
+
+- Structured JSON log lines per run (`service: bharatvoice-agent` /
+  `bharatvoice-transcribe`) with request ids for trace correlation.
+- `agentRuns` rows: intent, tool calls, per-stage latency (STT/LLM/tools/TTS),
+  providers + models, self-eval score, status (success/error/pending_approval).
+- **Insights** tab: success rate, latency breakdown, tool counts, model/intent/
+  language distributions, runs-per-day chart, recent-run table.
+
+## Testing & evaluation
+
+`bun test` runs 50 tests across 5 files with zero external dependencies:
+
+- **languages** — registry integrity (23 codes, uniqueness, lookups, labels)
+- **stt** — retry/backoff math, mock provider modes, factory rules
+- **llm** — JSON extraction, and an **offline eval set**: Hindi/Hinglish/
+  Marathi/Tamil/English utterances asserting intent + tool-call accuracy
+- **weather** — WMO mapping, deterministic mock fallback
+- **tools** — approval policy invariant, booking shape, summaries
+
+Every successful agent turn also scores itself (0–1) on grounding, language
+match, conciseness and latency budget. The upgrade path (documented in
+`PROJECT_PLAN.md`) is LLM-as-judge and a labelled eval corpus against a live
+provider.
+
+## Deployment
+
+The Freebuff Web platform runs the Vite frontend and Convex backend as managed
+services; publish through the platform flow. Secrets live in the platform's
+Keys UI. No self-hosted servers.
+
+---
+
+Built with React, Convex, Sarvam AI, Open-Meteo and the VLY AI gateway.
