@@ -101,6 +101,7 @@ Browser (React 19 + Vite)
 | Agent pipeline | `src/convex/agent.ts` | `runAgent` action (plan → gate → act → answer → speak → observe) and `resumeApproval` action |
 | DB layer | `src/convex/agentDb.ts` | Conversations, messages, runs, metrics aggregation, approvals (internal + user-facing functions) |
 | Tool registry | `src/convex/tools/index.ts` | Tool definitions with `requiresApproval` policy and human-readable summaries |
+| LLM-as-judge | `src/convex/ai/judge.ts`, `src/convex/ai/scoring.ts`, `src/convex/eval.ts`, `src/convex/crons.ts` | Async LLM scoring of completed turns with shared rubric + heuristic fallback; manual trigger and 30-min cron |
 | Weather tool | `src/convex/tools/weather.ts` | Open-Meteo geocoding + forecast, WMO code mapping, mock fallback |
 | Transcription service | `src/convex/transcribe.ts` | Upload → provider → persist → delete audio; structured errors |
 | Voice helpers | `src/lib/voice.ts` | MediaRecorder capture, browser speech synthesis |
@@ -145,11 +146,13 @@ Browser (React 19 + Vite)
 7. **Frontend** — themed landing page, protected dashboard, assistant chat
    with pipeline trace, history, approvals, insights. ✅
 8. **Tests + evaluation** — unit suite for the pure modules, offline eval of
-   the mock planner. ✅ (this plan)
-9. **Docs** — README, this plan. ✅
-10. **Future** — streaming STT/TTS, LLM-as-judge evaluation, more verticals
-    (food delivery, tickets), rate limiting and per-user quotas, WebSocket
-    real-time channel.
+   the mock planner. ✅
+9. **LLM-as-judge** — asynchronous judge (manual trigger + 30-min cron),
+   heuristic fallback, Insights surfacing. ✅
+10. **Docs** — README, this plan. ✅
+11. **Future** — streaming STT/TTS, labelled eval corpus + CI gating on judge
+    scores, more verticals (food delivery, tickets), rate limiting and
+    per-user quotas, WebSocket real-time channel.
 
 ## 6. Risks & mitigations
 
@@ -183,14 +186,34 @@ Browser (React 19 + Vite)
 
 ## 8. Evaluation strategy
 
-- **Runtime self-evaluation (every turn):** the agent scores each successful
-  response 0–1 on non-emptiness, grounding in tool numbers, language/script
-  match with the user, conciseness, and latency budget. Scores + notes persist
-  on `agentRuns` and roll up into the Insights dashboard. This is deliberately
-  a cheap heuristic; the architecture note documents the upgrade path:
-- **Upgrade path:** LLM-as-judge (have a second model score the first),
-  labelled offline eval sets (extend the `tests/llm.test.ts` corpus), and
-  transcript-level metrics (WER for STT, semantic similarity for answers).
+Two layers, deliberately separated so scoring never slows the conversation:
+
+1. **Runtime self-evaluation (every turn):** the agent scores each successful
+   response 0–1 on non-emptiness, grounding in tool numbers, language/script
+   match with the user, conciseness, and latency budget. This is a cheap
+   heuristic that runs at zero extra latency; scores + notes persist on
+   `agentRuns`.
+2. **LLM-as-judge (asynchronous):** `src/convex/ai/judge.ts` scores completed
+   turns against the same five-criterion rubric via an LLM call over the
+   `LLMProvider` interface — the gateway model in live mode, the deterministic
+   mock brain in mock mode. It runs after the user already got their answer:
+   - **manual trigger** — "Run LLM judge" button on the Insights tab scores
+     the current user's recent unscored runs;
+   - **automatic** — a scheduled job (`crons.ts`) scores unscored runs every
+     30 minutes deployment-wide;
+   - **resilient** — if the judge model fails or returns malformed output, it
+     degrades to the shared heuristic scorer (`ai/scoring.ts`) instead of
+     failing the run. The agent, the mock brain and the fallback all share
+     that one scorer so the numbers agree everywhere.
+
+   Judge results (`judgeScore`, `judgeCriteria`, `judgeNotes`, provider/model,
+   latency, status) persist on `agentRuns` and roll up into Insights metrics
+   (`avgJudgeScore`, `judgedCount`) and the per-run table.
+
+**Still on the roadmap:** labelled offline eval sets that run the full mock
+pipeline (extend the `tests/llm.test.ts` and `tests/judge.test.ts` corpora into
+a scored dataset), transcript-level metrics (WER for STT, semantic similarity
+for answers), and regression-gating eval scores in CI.
 
 ## 9. Deployment strategy
 

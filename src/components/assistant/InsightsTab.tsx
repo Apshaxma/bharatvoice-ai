@@ -1,5 +1,5 @@
 import { api } from "@/convex/_generated/api";
-import { useQuery } from "convex/react";
+import { useAction, useQuery } from "convex/react";
 import { formatDistanceToNow } from "date-fns";
 import {
   Activity,
@@ -8,12 +8,17 @@ import {
   CheckCircle2,
   Clock,
   Gauge,
+  Loader2,
   Mic,
   ShieldAlert,
   Sparkles,
   Wrench,
   Zap,
 } from "lucide-react";
+import { useState } from "react";
+import { toast } from "sonner";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Bar,
   BarChart,
@@ -24,7 +29,6 @@ import {
   YAxis,
 } from "recharts";
 import { getLanguageLabel } from "@/convex/ai/languages";
-import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
@@ -35,6 +39,35 @@ function formatMs(ms: number): string {
 export default function InsightsTab() {
   const metrics = useQuery(api.agentDb.metrics);
   const runs = useQuery(api.agentDb.listRuns, { limit: 30 }) ?? [];
+  const runJudgeEvaluation = useAction(api.eval.runJudgeEvaluation);
+  const [evaluating, setEvaluating] = useState(false);
+
+  const handleJudge = async () => {
+    if (evaluating) return;
+    setEvaluating(true);
+    try {
+      const res = await runJudgeEvaluation({ limit: 10 });
+      if (res.evaluated === 0) {
+        toast.info(res.message ?? "No unscored runs to evaluate.");
+      } else {
+        toast.success(
+          `LLM judge scored ${res.evaluated} run${res.evaluated === 1 ? "" : "s"}`,
+          {
+            description:
+              res.avgScore != null
+                ? `Average judge score ${res.avgScore.toFixed(2)} / 1.00`
+                : undefined,
+          },
+        );
+      }
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Judge evaluation failed. Try again.",
+      );
+    } finally {
+      setEvaluating(false);
+    }
+  };
 
   if (!metrics) {
     return (
@@ -72,8 +105,17 @@ export default function InsightsTab() {
     {
       label: "Avg self-eval",
       value: metrics.avgEvalScore.toFixed(2),
+      icon: CheckCircle2,
+      sub: "instant runtime score (0–1)",
+    },
+    {
+      label: "Avg judge score",
+      value: metrics.judgedCount > 0 ? metrics.avgJudgeScore.toFixed(2) : "—",
       icon: Gauge,
-      sub: "runtime quality score (0–1)",
+      sub:
+        metrics.judgedCount > 0
+          ? `${metrics.judgedCount} turns · LLM rubric`
+          : "run the LLM judge to score turns",
     },
   ];
 
@@ -96,18 +138,35 @@ export default function InsightsTab() {
 
   return (
     <div className="flex h-full flex-col gap-4">
-      <div>
-        <h1 className="text-xl font-bold tracking-tight text-foreground">
-          Agent observability
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          Latency, failures, tool calls and model usage — logged per run, per
-          user.
-        </p>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold tracking-tight text-foreground">
+            Agent observability
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            Latency, failures, tool calls, model usage and LLM-judge scores —
+            logged per run, per user.
+          </p>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={evaluating}
+          onClick={handleJudge}
+          className="gap-1.5 text-xs"
+        >
+          {evaluating ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <Gauge className="size-3.5 text-saffron" />
+          )}
+          {evaluating ? "Judging…" : "Run LLM judge"}
+        </Button>
       </div>
 
       {/* Stat cards */}
-      <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-6">
         {statCards.map((card) => (
           <Card
             key={card.label}
@@ -257,7 +316,8 @@ export default function InsightsTab() {
                   <th className="pb-2 pr-3 font-semibold">Intent</th>
                   <th className="pb-2 pr-3 font-semibold">Tools</th>
                   <th className="pb-2 pr-3 font-semibold">Latency</th>
-                  <th className="pb-2 pr-3 font-semibold">Eval</th>
+                  <th className="pb-2 pr-3 font-semibold">Self-eval</th>
+                  <th className="pb-2 pr-3 font-semibold">Judge</th>
                   <th className="pb-2 font-semibold">Status</th>
                 </tr>
               </thead>
@@ -291,6 +351,32 @@ export default function InsightsTab() {
                     </td>
                     <td className="py-2 pr-3 font-mono tabular-nums text-muted-foreground">
                       {run.evalScore != null ? run.evalScore.toFixed(2) : "—"}
+                    </td>
+                    <td className="py-2 pr-3">
+                      {run.judgeScore != null ? (
+                        <Badge
+                          variant="outline"
+                          className={cn(
+                            "gap-1 px-2 py-0 text-[10px] font-medium",
+                            run.judgeScore >= 0.8 && "border-leaf/40 text-leaf",
+                            run.judgeScore >= 0.5 &&
+                              run.judgeScore < 0.8 &&
+                              "border-amber-500/40 text-amber-600",
+                            run.judgeScore < 0.5 &&
+                              "border-destructive/40 text-destructive",
+                          )}
+                        >
+                          {run.judgeScore.toFixed(2)}
+                        </Badge>
+                      ) : run.judgeStatus === "error" ? (
+                        <span className="text-[10.5px] text-destructive/70">
+                          failed
+                        </span>
+                      ) : (
+                        <span className="text-[10.5px] text-muted-foreground">
+                          —
+                        </span>
+                      )}
                     </td>
                     <td className="py-2">
                       <Badge

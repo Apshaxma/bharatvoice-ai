@@ -10,6 +10,10 @@
  */
 
 import { vly } from "../../lib/vly-integrations";
+import {
+  heuristicScore,
+  type ScoreToolCall,
+} from "./scoring";
 
 export interface LLMMessage {
   role: "system" | "user" | "assistant";
@@ -173,12 +177,15 @@ export class MockLLMProvider implements LLMProvider {
 
     const wantsPlan = system.includes("PLANNER");
     const wantsAnswer = system.includes("RESPONDER");
+    const wantsJudge = system.includes("JUDGE");
 
     let content: string;
     if (wantsPlan) {
       content = JSON.stringify(this.plan(lastUser));
     } else if (wantsAnswer) {
       content = this.answer(lastUser, system);
+    } else if (wantsJudge) {
+      content = JSON.stringify(this.judge(lastUser));
     } else {
       content = "मैं यहाँ हूँ। बताइए, मैं कैसे मदद कर सकता हूँ?";
     }
@@ -348,6 +355,56 @@ export class MockLLMProvider implements LLMProvider {
       "en-IN": `Hello! I'm your BharatVoice assistant. Ask me about the weather in ${city}, book a cab, or anything else — in Hindi, Marathi, Tamil and 20 more Indian languages.`,
     };
     return byLang[lang] ?? byLang["en-IN"];
+  }
+
+  /**
+   * Mock judge: deterministic 0–1 score of one completed turn. Parses the
+   * turn JSON from the user message and applies the exact same rubric as the
+   * shared heuristic scorer, so mock mode scores identically to the real
+   * judge's fallback path.
+   */
+  private judge(userContent: string): Record<string, unknown> {
+    const turn = this.parseJudgeTurn(userContent);
+    const h = heuristicScore({
+      responseText: turn.responseText,
+      toolCalls: turn.toolCalls,
+      languageCode: turn.detectedLanguage,
+      totalLatencyMs: turn.totalLatencyMs,
+    });
+    return { score: h.score, criteria: h.criteria, notes: h.notes };
+  }
+
+  /** Defensively extract the turn fields the judge rubric needs. */
+  private parseJudgeTurn(userContent: string): {
+    responseText: string;
+    detectedLanguage: string | null;
+    toolCalls: ScoreToolCall[];
+    totalLatencyMs: number;
+  } {
+    let raw: unknown = null;
+    try {
+      const start = userContent.indexOf("{");
+      raw = JSON.parse(start === -1 ? userContent : userContent.slice(start));
+    } catch {
+      return { responseText: "", detectedLanguage: null, toolCalls: [], totalLatencyMs: 0 };
+    }
+    const obj = (raw ?? {}) as Record<string, unknown>;
+    const toolCalls = Array.isArray(obj.toolCalls)
+      ? (obj.toolCalls as Record<string, unknown>[]).map((t) => ({
+          status: typeof t.status === "string" ? t.status : "unknown",
+          result:
+            t.result && typeof t.result === "object"
+              ? (t.result as Record<string, unknown>)
+              : null,
+        }))
+      : [];
+    return {
+      responseText: typeof obj.responseText === "string" ? obj.responseText : "",
+      detectedLanguage:
+        typeof obj.detectedLanguage === "string" ? obj.detectedLanguage : null,
+      toolCalls,
+      totalLatencyMs: typeof obj.totalLatencyMs === "number" ? obj.totalLatencyMs : 0,
+    };
   }
 
   /** Best-effort language detection from script + keywords for the mock. */

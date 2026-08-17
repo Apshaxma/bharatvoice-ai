@@ -20,6 +20,11 @@ policy) → generate answer → translate/answer in the user's language → conv
 to speech → play it back → self-evaluate → log latency/tools/models → require
 human approval for sensitive actions → stay deployable as a real app.**
 
+Every turn is also **scored twice**: instantly by a zero-latency heuristic, and
+asynchronously by an **LLM-as-judge** that evaluates the completed turn against
+a five-criterion rubric (completeness, grounding, language, conciseness,
+latency) without slowing down the conversation.
+
 ## Architecture
 
 ```
@@ -123,6 +128,25 @@ realistic sample utterances, the LLM planner/responder are deterministic, and
 answers are spoken by the browser. The UI reports the active mode via
 `getRuntimeInfo`.
 
+## LLM-as-judge evaluation
+
+Completed turns are scored by an LLM judge (`src/convex/ai/judge.ts`) that
+reads the same rubric as the runtime heuristic and returns a 0–1 score with
+per-criterion notes:
+
+- **Manual** — the "Run LLM judge" button on the **Insights** tab scores your
+  recent unscored runs immediately.
+- **Automatic** — a scheduled job (`crons.ts`) scores unscored runs every 30
+  minutes.
+- **Resilient** — the judge uses the same `LLMProvider` as the agent (gateway
+  model live, deterministic mock brain offline). If the judge model fails or
+  returns malformed output, it falls back to the shared heuristic scorer
+  instead of failing the run.
+
+Judge scores persist on `agentRuns` (`judgeScore`, `judgeCriteria`,
+`judgeNotes`, provider/model, latency) and roll up into the Insights
+statistics and per-run table.
+
 ## Human-in-the-loop
 
 Sensitive actions (cab bookings) land in the **Approvals** tab as pending
@@ -141,7 +165,7 @@ the sensitive tool's result is never fabricated.
 
 ## Testing & evaluation
 
-`bun test` runs 50 tests across 5 files with zero external dependencies:
+`bun test` runs 60+ tests across 6 files with zero external dependencies:
 
 - **languages** — registry integrity (23 codes, uniqueness, lookups, labels)
 - **stt** — retry/backoff math, mock provider modes, factory rules
@@ -149,11 +173,12 @@ the sensitive tool's result is never fabricated.
   Marathi/Tamil/English utterances asserting intent + tool-call accuracy
 - **weather** — WMO mapping, deterministic mock fallback
 - **tools** — approval policy invariant, booking shape, summaries
+- **judge** — the LLM-as-judge layer: rubric scoring via the mock brain,
+  determinism, and heuristic fallback on judge-model failure
 
 Every successful agent turn also scores itself (0–1) on grounding, language
-match, conciseness and latency budget. The upgrade path (documented in
-`PROJECT_PLAN.md`) is LLM-as-judge and a labelled eval corpus against a live
-provider.
+match, conciseness and latency budget — and the LLM-as-judge layer re-scores
+completed turns asynchronously against the same rubric.
 
 ## Deployment
 

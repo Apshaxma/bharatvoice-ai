@@ -29,6 +29,7 @@ import {
   type LLMMessage,
   type LLMProvider,
 } from "./ai/llm";
+import { heuristicScore } from "./ai/scoring";
 import { createTTSProvider } from "./ai/tts";
 import { getTool, summarizeToolCall } from "./tools";
 
@@ -101,9 +102,10 @@ function responderSystemPrompt(
 }
 
 // ---------------------------------------------------------------------------
-// Self-evaluation — a lightweight runtime check of response quality. A real
-// deployment would layer an LLM-as-judge or a labelled eval set on top; this
-// heuristic version runs on every turn at zero extra cost.
+// Self-evaluation — a lightweight runtime check of response quality. Runs on
+// every turn at zero extra latency; the richer LLM-as-judge layer (ai/judge.ts)
+// scores the same turns asynchronously afterwards. Both share one rubric via
+// ai/scoring.ts so their numbers agree.
 // ---------------------------------------------------------------------------
 
 function selfEvaluate(opts: {
@@ -112,71 +114,13 @@ function selfEvaluate(opts: {
   languageCode: string | null;
   totalLatencyMs: number;
 }): { score: number; notes: string[] } {
-  const notes: string[] = [];
-  let score = 0;
-
-  const text = opts.responseText.trim();
-  if (text.length >= 10) {
-    score += 0.3;
-    notes.push("non-empty response");
-  } else {
-    notes.push("response too short");
-  }
-
-  const executed = opts.toolCalls.filter((t) => t.status === "executed");
-  const numbersFromResults = executed
-    .flatMap((t) => Object.values(t.result ?? {}))
-    .filter((val): val is number => typeof val === "number");
-  if (executed.length > 0 && numbersFromResults.length > 0) {
-    const cited = numbersFromResults.some((n) => text.includes(String(n)));
-    if (cited) {
-      score += 0.3;
-      notes.push("answer cites tool data");
-    } else {
-      notes.push("answer missing tool numbers");
-    }
-  }
-
-  if (opts.languageCode && text) {
-    const scriptOk = languageScriptMatches(text, opts.languageCode);
-    if (scriptOk) {
-      score += 0.2;
-      notes.push("language matches user");
-    } else {
-      notes.push("script mismatch with user language");
-    }
-  }
-
-  if (text.length <= 400) {
-    score += 0.1;
-    notes.push("concise");
-  }
-
-  if (opts.totalLatencyMs < 12_000) {
-    score += 0.1;
-    notes.push("within latency budget");
-  }
-
-  return { score: Math.min(1, Math.round(score * 100) / 100), notes };
-}
-
-function languageScriptMatches(text: string, languageCode: string): boolean {
-  const ranges: Record<string, RegExp> = {
-    "hi-IN": /[\u0900-\u097F]/,
-    "mr-IN": /[\u0900-\u097F]/,
-    "bn-IN": /[\u0980-\u09FF]/,
-    "ta-IN": /[\u0B80-\u0BFF]/,
-    "te-IN": /[\u0C00-\u0C7F]/,
-    "kn-IN": /[\u0C80-\u0CFF]/,
-    "ml-IN": /[\u0D00-\u0D7F]/,
-    "gu-IN": /[\u0A80-\u0AFF]/,
-    "pa-IN": /[\u0A00-\u0A7F]/,
-    "ur-IN": /[\u0600-\u06FF]/,
-    "en-IN": /[a-zA-Z]/,
-  };
-  const range = ranges[languageCode];
-  if (!range) return true; // unknown script → don't penalize
-  return range.test(text);
+  const result = heuristicScore({
+    responseText: opts.responseText,
+    toolCalls: opts.toolCalls,
+    languageCode: opts.languageCode,
+    totalLatencyMs: opts.totalLatencyMs,
+  });
+  return { score: result.score, notes: result.notes };
 }
 
 // ---------------------------------------------------------------------------

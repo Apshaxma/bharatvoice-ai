@@ -98,6 +98,15 @@ const schema = defineSchema(
       ttsProvider: v.optional(v.string()),
       evalScore: v.optional(v.number()),
       evalNotes: v.optional(v.string()),
+      // LLM-as-judge results, written asynchronously after the turn completes.
+      judgeStatus: v.optional(v.union(v.literal("done"), v.literal("error"))),
+      judgeScore: v.optional(v.number()),
+      judgeCriteria: v.optional(v.any()),
+      judgeNotes: v.optional(v.string()),
+      judgeProvider: v.optional(v.string()),
+      judgeModel: v.optional(v.string()),
+      judgeLatencyMs: v.optional(v.number()),
+      judgeError: v.optional(v.string()),
       status: v.union(
         v.literal("success"),
         v.literal("error"),

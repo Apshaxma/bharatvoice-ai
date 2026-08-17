@@ -185,6 +185,31 @@ export const getConversationHistory = internalQuery({
   },
 });
 
+/**
+ * Recent runs that have not yet been scored by the LLM judge. When `userId`
+ * is omitted (scheduled job) it scans deployment-wide; runs already scored
+ * (judgeScore set or judgeStatus "done") are skipped.
+ */
+export const getRunsToEvaluate = internalQuery({
+  args: {
+    userId: v.optional(v.id("users")),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const limit = Math.min(Math.max(args.limit ?? 20, 1), 100);
+    const recent = args.userId
+      ? await ctx.db
+          .query("agentRuns")
+          .withIndex("by_user", (q) => q.eq("userId", args.userId))
+          .order("desc")
+          .take(limit * 2)
+      : await ctx.db.query("agentRuns").order("desc").take(limit * 2);
+    return recent
+      .filter((r) => r.judgeScore == null && r.judgeStatus !== "done")
+      .slice(0, limit);
+  },
+});
+
 // ---------------------------------------------------------------------------
 // Conversations (user-facing)
 // ---------------------------------------------------------------------------
@@ -292,6 +317,8 @@ export const metrics = query({
         avgTtsLatencyMs: 0,
         totalToolCalls: 0,
         avgEvalScore: 0,
+        avgJudgeScore: 0,
+        judgedCount: 0,
         intentCounts: {},
         languageCounts: {},
         modelUsage: {},
@@ -316,6 +343,8 @@ export const metrics = query({
     let ttsLatency = 0;
     let evalSum = 0;
     let evalCount = 0;
+    let judgeSum = 0;
+    let judgeCount = 0;
     let sttCount = 0;
     let llmCount = 0;
     let toolCount = 0;
@@ -361,6 +390,10 @@ export const metrics = query({
         evalSum += run.evalScore;
         evalCount += 1;
       }
+      if (run.judgeScore != null) {
+        judgeSum += run.judgeScore;
+        judgeCount += 1;
+      }
     }
 
     const last14: string[] = [];
@@ -392,6 +425,8 @@ export const metrics = query({
       avgTtsLatencyMs: ttsCount ? Math.round(ttsLatency / ttsCount) : 0,
       totalToolCalls,
       avgEvalScore: evalCount ? Math.round((evalSum / evalCount) * 100) / 100 : 0,
+      avgJudgeScore: judgeCount ? Math.round((judgeSum / judgeCount) * 100) / 100 : 0,
+      judgedCount: judgeCount,
       intentCounts,
       languageCounts,
       modelUsage,
