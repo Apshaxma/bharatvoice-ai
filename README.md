@@ -180,11 +180,56 @@ Every successful agent turn also scores itself (0–1) on grounding, language
 match, conciseness and latency budget — and the LLM-as-judge layer re-scores
 completed turns asynchronously against the same rubric.
 
-## Deployment
+## Deployment (Vercel + Convex Cloud)
 
-The Freebuff Web platform runs the Vite frontend and Convex backend as managed
-services; publish through the platform flow. Secrets live in the platform's
-Keys UI. No self-hosted servers.
+The app is split into two deployable parts: the **Vite frontend** (static,
+Vercel) and the **Convex backend** (functions + database, Convex Cloud).
+
+### Frontend → Vercel
+
+1. Push this repo to GitHub and **Import** it in Vercel. The repo already
+   ships `vercel.json` (SPA rewrites, `bun install` / `bun run build`, output
+   `dist`), so no project settings are needed.
+2. Add the build-time env var in Vercel (**Settings → Environment Variables**):
+
+   | Variable | Value |
+   |---|---|
+   | `VITE_CONVEX_URL` | your Convex deployment URL, e.g. `https://<deployment>.convex.site` (same value the app uses locally) |
+
+   This is the **only** env var Vercel needs — `src/convex/_generated` is
+   committed, so the build runs `tsc` without any Convex credentials.
+3. Deploy. Client-side routing (`/dashboard`, `/auth`, …) is handled by the
+   SPA rewrite in `vercel.json`.
+
+### Backend → Convex Cloud
+
+1. Create a deployment at [convex.new](https://convex.new) (or use the
+   platform's Convex deployment).
+2. Push functions + schema from your machine:
+
+   ```bash
+   npx convex deploy --team <team> --project <project> --deployment <name>
+   ```
+
+   or set a `CONVEX_DEPLOY_KEY` and run `npx convex deploy` (e.g. in CI).
+3. Set **server-side** env vars in the **Convex dashboard** (never Vercel —
+   they're read via `process.env` inside actions):
+
+   | Variable | Purpose |
+   |---|---|
+   | `VLY_INTEGRATION_KEY` | VLY AI gateway token (auto-injected by the platform) |
+   | `AGENT_LLM_MODEL` | Model id on the VLY gateway, e.g. `gpt-5-mini` |
+   | `LLM_API_KEY` | Key for any OpenAI-compatible LLM endpoint |
+   | `LLM_BASE_URL` | OpenAI-compatible base URL |
+   | `LLM_MODEL` | Model id for that endpoint |
+   | `MOCK_MODE` | `true` forces the offline mock brain |
+
+   With no keys the agent runs fully offline on the deterministic mock.
+   `CONVEX_SITE_URL` (used by Convex Auth) is set automatically on the
+   deployment.
+
+> The Freebuff Web platform can also run both halves as managed services;
+> publish through the platform flow. Secrets live in the platform's Keys UI.
 
 ---
 
