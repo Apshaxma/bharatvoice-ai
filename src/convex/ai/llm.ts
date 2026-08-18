@@ -130,6 +130,34 @@ function sleep(ms: number): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Model resolution — avoid random-router models that may pick safety classifiers
+// ---------------------------------------------------------------------------
+
+/** Models that randomly route to non-chat models on OpenRouter. */
+const UNRELIABLE_MODELS = new Set([
+  "openrouter/auto",
+  "openrouter/free",
+  "auto",
+  "free",
+]);
+
+/** Reliable free models with Hindi support for fallback. */
+const RELIABLE_FALLBACK_MODEL = "meta-llama/llama-3.1-8b-instruct:free";
+
+/**
+ * If the user configured a random-router model slug (e.g. "openrouter/free"),
+ * substitute a specific reliable model so the agent doesn't accidentally hit
+ * a content-safety classifier or other non-chat model.
+ */
+export function resolveModel(requested: string | undefined): string {
+  const raw = (requested ?? "").trim();
+  if (!raw || UNRELIABLE_MODELS.has(raw.toLowerCase())) {
+    return RELIABLE_FALLBACK_MODEL;
+  }
+  return raw;
+}
+
+// ---------------------------------------------------------------------------
 // Provider interfaces
 // ---------------------------------------------------------------------------
 
@@ -260,7 +288,7 @@ export class OpenAICompatibleLLMProvider implements LLMProvider {
     if (!options.apiKey)
       throw new Error("OpenAICompatibleLLMProvider: apiKey is required");
     this.apiKey = options.apiKey;
-    this.model = options.model ?? "meta-llama/llama-3.1-8b-instruct:free";
+    this.model = resolveModel(options.model);
     this.baseUrl = (options.baseUrl ?? "https://openrouter.ai/api/v1").replace(
       /\/$/,
       "",
@@ -335,11 +363,11 @@ export class OpenAICompatibleLLMProvider implements LLMProvider {
           choices?: { message?: { content?: string | null } }[];
           usage?: { prompt_tokens?: number; completion_tokens?: number };
         };
-        const content = body.choices?.[0]?.message?.content ?? "";
-
         // Some models (safety classifiers, reasoning models) return content:
         // null instead of an empty string — treat as empty.
+        const content = body.choices?.[0]?.message?.content ?? "";
         const finalContent = content ?? "";
+
         return {
           content: finalContent,
           latencyMs: Date.now() - started,

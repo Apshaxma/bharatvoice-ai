@@ -15,6 +15,7 @@ import {
   createLLMProvider,
   extractJson,
   parseLlmJson,
+  resolveModel,
   type LLMMessage,
 } from "../src/convex/ai/llm";
 
@@ -216,6 +217,35 @@ describe("mock responder — grounded multilingual answers", () => {
 // ---------------------------------------------------------------------------
 // Provider factory
 // ---------------------------------------------------------------------------
+
+describe("resolveModel — avoid random-router models", () => {
+  test("openrouter/free falls back to reliable model", () => {
+    expect(resolveModel("openrouter/free")).toBe("meta-llama/llama-3.1-8b-instruct:free");
+  });
+
+  test("openrouter/auto falls back to reliable model", () => {
+    expect(resolveModel("openrouter/auto")).toBe("meta-llama/llama-3.1-8b-instruct:free");
+  });
+
+  test("empty string falls back to reliable model", () => {
+    expect(resolveModel("")).toBe("meta-llama/llama-3.1-8b-instruct:free");
+  });
+
+  test("undefined falls back to reliable model", () => {
+    expect(resolveModel(undefined)).toBe("meta-llama/llama-3.1-8b-instruct:free");
+  });
+
+  test("specific model slug is preserved", () => {
+    expect(resolveModel("meta-llama/llama-3.1-8b-instruct:free")).toBe("meta-llama/llama-3.1-8b-instruct:free");
+    expect(resolveModel("google/gemma-2-9b-it:free")).toBe("google/gemma-2-9b-it:free");
+    expect(resolveModel("mistralai/mistral-7b-instruct:free")).toBe("mistralai/mistral-7b-instruct:free");
+  });
+
+  test("case-insensitive detection of unreliable models", () => {
+    expect(resolveModel("OpenRouter/Free")).toBe("meta-llama/llama-3.1-8b-instruct:free");
+    expect(resolveModel("OPENROUTER/AUTO")).toBe("meta-llama/llama-3.1-8b-instruct:free");
+  });
+});
 
 describe("LLM provider factory — vendor-independent", () => {
   test("mock mode forces the mock", () => {
