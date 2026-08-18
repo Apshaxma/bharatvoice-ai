@@ -455,7 +455,7 @@ export default function AssistantTab() {
                   : 'Type in Hinglish, Hindi, Marathi, Tamil… or press the mic'
               }
               disabled={isProcessing || isRecording}
-              className="min-h-11 max-h-32 resize-none text-sm"
+              className="min-h-14 max-h-40 resize-none rounded-2xl border-border/80 bg-background px-4 py-3.5 text-sm shadow-sm placeholder:text-muted-foreground/60 focus-visible:border-saffron/50 focus-visible:ring-saffron/20"
               rows={1}
             />
             <Button
