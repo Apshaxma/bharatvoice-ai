@@ -25,9 +25,6 @@ jobs:
       - name: Run tests
         run: bun test
 
-      - name: Build
-        run: bun run build
-
   deploy-convex:
     needs: test
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -46,18 +43,3 @@ jobs:
         run: bunx convex deploy --yes
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
-
-  deploy-vercel:
-    needs: test
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Deploy to Vercel
-        uses: amondnet/vercel-action@v25
-        with:
-          vercel-token: ${{ secrets.VERCEL_TOKEN }}
-          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
-          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
-          vercel-args: '--prod'
