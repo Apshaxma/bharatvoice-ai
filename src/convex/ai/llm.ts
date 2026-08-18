@@ -260,7 +260,7 @@ export class OpenAICompatibleLLMProvider implements LLMProvider {
     if (!options.apiKey)
       throw new Error("OpenAICompatibleLLMProvider: apiKey is required");
     this.apiKey = options.apiKey;
-    this.model = options.model ?? "openrouter/auto";
+    this.model = options.model ?? "meta-llama/llama-3.1-8b-instruct:free";
     this.baseUrl = (options.baseUrl ?? "https://openrouter.ai/api/v1").replace(
       /\/$/,
       "",
@@ -332,18 +332,22 @@ export class OpenAICompatibleLLMProvider implements LLMProvider {
         }
 
         const body = (await response.json()) as {
-          choices?: { message?: { content?: string } }[];
+          choices?: { message?: { content?: string | null } }[];
           usage?: { prompt_tokens?: number; completion_tokens?: number };
         };
         const content = body.choices?.[0]?.message?.content ?? "";
+
+        // Some models (safety classifiers, reasoning models) return content:
+        // null instead of an empty string — treat as empty.
+        const finalContent = content ?? "";
         return {
-          content,
+          content: finalContent,
           latencyMs: Date.now() - started,
           provider: this.name,
           model: this.model,
           promptTokens: body.usage?.prompt_tokens,
           completionTokens: body.usage?.completion_tokens,
-          error: content ? null : "LLM returned an empty response",
+          error: finalContent ? null : "LLM returned an empty response",
         };
       } catch (err) {
         const aborted =

@@ -8,7 +8,6 @@
  */
 
 import { action } from "./_generated/server";
-import { v } from "convex/values";
 import { createLLMProvider } from "./ai/llm";
 
 function env(name: string): string {
@@ -48,76 +47,123 @@ export const healthCheck = action({
         : "Running in live mode.",
     });
 
-    // 2. API key presence
+    // 2. API key presence (NEVER expose the actual key)
     const openAiKey = env("LLM_API_KEY");
     const vlyKey = env("VLY_INTEGRATION_KEY");
-    const hasKey = !!openAiKey || !!vlyKey;
+    const hasOpenAiKey = !!openAiKey;
+    const hasVlyKey = !!vlyKey;
 
     checks.push({
       name: "LLM API key",
-      status: hasKey ? "PASS" : mock ? "WARNING" : "FAIL",
-      detail: hasKey
-        ? `OpenRouter key configured: ${!!openAiKey}, VLY gateway: ${!!vlyKey}`
-        : "No LLM API key configured. Set LLM_API_KEY in the Convex dashboard.",
+      status: hasOpenAiKey || hasVlyKey ? "PASS" : mock ? "WARNING" : "FAIL",
+      detail: `LLM_API_KEY configured: ${hasOpenAiKey}, VLY_INTEGRATION_KEY configured: ${hasVlyKey}`,
     });
 
     // 3. Model configuration
     const model = env("LLM_MODEL") || env("AGENT_LLM_MODEL") || "default";
+    const baseUrl = env("LLM_BASE_URL") || "(default: https://openrouter.ai/api/v1)";
     checks.push({
       name: "Model configuration",
       status: "PASS",
-      detail: `Model: ${model}${openAiKey ? " (OpenRouter)" : vlyKey ? " (VLY gateway)" : " (mock)"}`,
+      detail: `Model: ${model}, Base URL: ${baseUrl}`,
     });
 
-    // 4. LLM connectivity test (if not in mock mode and key is present)
-    if (!mock && (openAiKey || vlyKey)) {
+    // 4. Raw HTTP diagnostics (before going through the provider abstraction)
+    if (!mock && hasOpenAiKey) {
       try {
-        const llm = createLLMProvider({
-          mockMode: false,
-          apiKey: vlyKey,
-          model: env("AGENT_LLM_MODEL") || undefined,
-          openAiApiKey: openAiKey || undefined,
-          openAiBaseUrl: env("LLM_BASE_URL") || undefined,
-          openAiModel: env("LLM_MODEL") || undefined,
+        const baseUrlClean = (env("LLM_BASE_URL") || "https://openrouter.ai/api/v1").replace(/\/$/, "");
+        const testModel = model || "meta-llama/llama-3.1-8b-instruct:free";
+
+        const response = await fetch(`${baseUrlClean}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${openAiKey}`,
+          },
+          body: JSON.stringify({
+            model: testModel,
+            messages: [{ role: "user", content: "Say exactly: health check ok" }],
+            temperature: 0,
+            max_tokens: 50,
+          }),
+          signal: AbortSignal.timeout(15_000),
         });
 
-        const result = await llm.complete(
-          [{ role: "user", content: 'Say exactly: "health check ok"' }],
-          { temperature: 0, maxTokens: 20 },
-        );
+        const responseBody = await response.text();
 
-        if (result.error) {
-          const errType = result.structuredError?.type ?? "unknown";
+        // Safe logging — NEVER expose the API key
+        console.log(JSON.stringify({
+          service: "bharatvoice-health",
+          event: "openrouter_diagnostic",
+          httpStatus: response.status,
+          baseUrl: baseUrlClean,
+          model: testModel,
+          apiKeyConfigured: true,
+          apiKeyPrefix: openAiKey.slice(0, 8) + "...",
+          responseBodyPreview: responseBody.slice(0, 500),
+        }));
+
+        if (!response.ok) {
+          // Parse the error body for more detail
+          let providerCode = "unknown";
+          let providerMessage = responseBody;
+          try {
+            const parsed = JSON.parse(responseBody);
+            if (parsed.error) {
+              providerCode = parsed.error.code || parsed.error.type || "unknown";
+              providerMessage = parsed.error.message || responseBody;
+            }
+          } catch { /* not JSON */ }
+
           checks.push({
-            name: "LLM connectivity",
+            name: "LLM connectivity (raw)",
             status: "FAIL",
-            detail: `Error (${errType}): ${result.error}`,
+            detail: `HTTP ${response.status} | Provider code: ${providerCode} | Message: ${providerMessage.slice(0, 300)}`,
           });
         } else {
-          checks.push({
-            name: "LLM connectivity",
-            status: "PASS",
-            detail: `Provider: ${result.provider}, Model: ${result.model}, Latency: ${result.latencyMs}ms`,
-          });
+          // Parse success
+          let content = "";
+          try {
+            const parsed = JSON.parse(responseBody);
+            content = parsed.choices?.[0]?.message?.content ?? "";
+          } catch { /* not JSON */ }
+
+          if (content) {
+            checks.push({
+              name: "LLM connectivity (raw)",
+              status: "PASS",
+              detail: `HTTP 200 | Model: ${testModel} | Response: "${content.slice(0, 100)}"`,
+            });
+          } else {
+            checks.push({
+              name: "LLM connectivity (raw)",
+              status: "FAIL",
+              detail: `HTTP 200 but empty content. Response body preview: ${responseBody.slice(0, 300)}`,
+            });
+          }
         }
       } catch (err) {
         checks.push({
-          name: "LLM connectivity",
+          name: "LLM connectivity (raw)",
           status: "FAIL",
-          detail: `Unexpected error: ${err instanceof Error ? err.message : "unknown"}`,
+          detail: `Network error: ${err instanceof Error ? err.message : "unknown"}`,
         });
       }
+    } else if (mock) {
+      checks.push({
+        name: "LLM connectivity (raw)",
+        status: "WARNING",
+        detail: "Skipped — mock mode.",
+      });
     } else {
       checks.push({
-        name: "LLM connectivity",
-        status: mock ? "WARNING" : "FAIL",
-        detail: mock
-          ? "Skipped — mock mode uses a deterministic offline provider."
-          : "Cannot test — no API key configured.",
+        name: "LLM connectivity (raw)",
+        status: "FAIL",
+        detail: "Cannot test — no LLM_API_KEY configured.",
       });
     }
 
-    // 5. Environment variables check
+    // 5. Environment variables check (names only, no values)
     const envVars = [
       "LLM_API_KEY",
       "LLM_BASE_URL",
@@ -133,21 +179,14 @@ export const healthCheck = action({
       detail: `${configured.length}/${envVars.length} configured: ${configured.length > 0 ? configured.join(", ") : "none"}`,
     });
 
-    // 6. Speech provider
+    // 6. Speech providers
     checks.push({
       name: "Speech providers",
       status: "PASS",
       detail: "STT: browser Web Speech API (no key needed), TTS: browser speechSynthesis",
     });
 
-    // 7. STT backend
-    checks.push({
-      name: "STT backend",
-      status: "PASS",
-      detail: "Mock STT (deterministic, used only for upload fallback path)",
-    });
-
-    // 8. Tool calling
+    // 7. Tool calling
     checks.push({
       name: "Tool calling",
       status: "PASS",
