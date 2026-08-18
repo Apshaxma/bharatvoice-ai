@@ -15,6 +15,124 @@ import {
   type ScoreToolCall,
 } from "./scoring";
 
+// ---------------------------------------------------------------------------
+// Structured error types for the LLM layer
+// ---------------------------------------------------------------------------
+
+export type LLMErrorType =
+  | "authentication"
+  | "rate_limit"
+  | "provider_denied"
+  | "model_not_found"
+  | "invalid_request"
+  | "timeout"
+  | "network"
+  | "provider_unavailable"
+  | "unknown";
+
+export interface LLMStructuredError {
+  type: LLMErrorType;
+  message: string;
+  httpStatus: number | null;
+  providerCode: string | null;
+  model: string;
+}
+
+/** Map an HTTP status + body to a structured error. */
+export function mapHttpToStructuredError(
+  status: number,
+  body: string,
+  model: string,
+): LLMStructuredError {
+  let providerCode: string | null = null;
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    const errObj = parsed.error as Record<string, unknown> | undefined;
+    if (errObj) {
+      if (typeof errObj.code === "string") providerCode = errObj.code;
+    }
+  } catch {
+    // body isn't JSON — use raw text
+  }
+
+  switch (status) {
+    case 401:
+      return {
+        type: "authentication",
+        message: "AI authentication failed. Check the OpenRouter API key.",
+        httpStatus: 401,
+        providerCode,
+        model,
+      };
+    case 403:
+      return {
+        type: "provider_denied",
+        message:
+          "AI provider access was denied. Check the selected model/provider.",
+        httpStatus: 403,
+        providerCode,
+        model,
+      };
+    case 429:
+      return {
+        type: "rate_limit",
+        message: "AI is temporarily rate-limited. Please try again.",
+        httpStatus: 429,
+        providerCode,
+        model,
+      };
+    case 404:
+      return {
+        type: "model_not_found",
+        message: `AI model "${model}" was not found. Check OPENROUTER_MODEL.`,
+        httpStatus: 404,
+        providerCode,
+        model,
+      };
+    case 400:
+      return {
+        type: "invalid_request",
+        message: "AI request was invalid. Check the model configuration.",
+        httpStatus: 400,
+        providerCode,
+        model,
+      };
+    case 502:
+    case 503:
+    case 504:
+      return {
+        type: "provider_unavailable",
+        message: "AI provider is temporarily unavailable. Please try again.",
+        httpStatus: status,
+        providerCode,
+        model,
+      };
+    default:
+      return {
+        type: "unknown",
+        message: `AI provider returned HTTP ${status}.`,
+        httpStatus: status,
+        providerCode,
+        model,
+      };
+  }
+}
+
+function isRetryable(status: number): boolean {
+  return status === 429 || status === 502 || status === 503 || status === 504;
+}
+
+const MAX_RETRIES = 2;
+const BASE_RETRY_DELAY_MS = 1000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ---------------------------------------------------------------------------
+// Provider interfaces
+// ---------------------------------------------------------------------------
+
 export interface LLMMessage {
   role: "system" | "user" | "assistant";
   content: string;
@@ -29,6 +147,8 @@ export interface LLMResult {
   completionTokens?: number;
   /** Non-null when the provider call itself failed. */
   error: string | null;
+  /** Structured error when the failure has a known category. */
+  structuredError?: LLMStructuredError;
 }
 
 export interface LLMOptions {
@@ -71,11 +191,10 @@ export function parseLlmJson<T>(text: string): T | null {
   }
 }
 
-/**
- * Production provider — routes through the VLY AI gateway (OpenAI-compatible)
- * so the app gets many models without managing vendor keys. Model ids follow
- * the Vercel AI gateway convention, e.g. "gpt-5-mini" or "claude-sonnet-4-5".
- */
+// ---------------------------------------------------------------------------
+// VLY gateway provider (auto-injected key)
+// ---------------------------------------------------------------------------
+
 export class VlyLLMProvider implements LLMProvider {
   readonly name = "vly-gateway";
   readonly model: string;
@@ -121,14 +240,10 @@ export class VlyLLMProvider implements LLMProvider {
   }
 }
 
-/**
- * Generic OpenAI-compatible chat-completions provider.
- *
- * Lets the app point at ANY OpenAI-compatible endpoint — OpenAI, Groq,
- * Together, Mistral, Ollama (local), corporate gateways, etc. — via
- * LLM_API_KEY / LLM_BASE_URL / LLM_MODEL, so the LLM layer is fully
- * vendor-independent.
- */
+// ---------------------------------------------------------------------------
+// OpenAI-compatible provider (OpenRouter, Groq, Together, Ollama, etc.)
+// ---------------------------------------------------------------------------
+
 export class OpenAICompatibleLLMProvider implements LLMProvider {
   readonly name = "openai-compatible";
   readonly model: string;
@@ -142,10 +257,14 @@ export class OpenAICompatibleLLMProvider implements LLMProvider {
     baseUrl?: string;
     timeoutMs?: number;
   }) {
-    if (!options.apiKey) throw new Error("OpenAICompatibleLLMProvider: apiKey is required");
+    if (!options.apiKey)
+      throw new Error("OpenAICompatibleLLMProvider: apiKey is required");
     this.apiKey = options.apiKey;
-    this.model = options.model ?? "gpt-4o-mini";
-    this.baseUrl = (options.baseUrl ?? "https://api.openai.com/v1").replace(/\/$/, "");
+    this.model = options.model ?? "openrouter/auto";
+    this.baseUrl = (options.baseUrl ?? "https://openrouter.ai/api/v1").replace(
+      /\/$/,
+      "",
+    );
     this.timeoutMs = options.timeoutMs ?? 30_000;
   }
 
@@ -154,68 +273,120 @@ export class OpenAICompatibleLLMProvider implements LLMProvider {
     options: LLMOptions = {},
   ): Promise<LLMResult> {
     const started = Date.now();
-    try {
-      const response = await fetch(`${this.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this.apiKey}`,
-        },
-        body: JSON.stringify({
-          model: this.model,
-          messages: messages.map((m) => ({ role: m.role, content: m.content })),
-          temperature: options.temperature ?? 0.4,
-          max_tokens: options.maxTokens ?? 700,
-        }),
-        signal: AbortSignal.timeout(this.timeoutMs),
-      });
 
-      if (!response.ok) {
-        const detail = await response.text().catch(() => "");
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      if (attempt > 0) {
+        const delay =
+          BASE_RETRY_DELAY_MS * Math.pow(2, attempt - 1) +
+          Math.random() * 500;
+        await sleep(delay);
+      }
+
+      try {
+        const response = await fetch(`${this.baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${this.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: this.model,
+            messages: messages.map((m) => ({ role: m.role, content: m.content })),
+            temperature: options.temperature ?? 0.4,
+            max_tokens: options.maxTokens ?? 700,
+          }),
+          signal: AbortSignal.timeout(this.timeoutMs),
+        });
+
+        if (!response.ok) {
+          const detail = await response.text().catch(() => "");
+          const structured = mapHttpToStructuredError(
+            response.status,
+            detail,
+            this.model,
+          );
+
+          // Retry only on transient errors (429, 5xx)
+          if (isRetryable(response.status) && attempt < MAX_RETRIES) {
+            console.log(
+              JSON.stringify({
+                service: "bharatvoice-llm",
+                event: "retry",
+                status: response.status,
+                attempt: attempt + 1,
+                model: this.model,
+                baseUrl: this.baseUrl.replace(/\/v1$/, ""),
+              }),
+            );
+            continue;
+          }
+
+          return {
+            content: "",
+            latencyMs: Date.now() - started,
+            provider: this.name,
+            model: this.model,
+            error: structured.message,
+            structuredError: structured,
+          };
+        }
+
+        const body = (await response.json()) as {
+          choices?: { message?: { content?: string } }[];
+          usage?: { prompt_tokens?: number; completion_tokens?: number };
+        };
+        const content = body.choices?.[0]?.message?.content ?? "";
+        return {
+          content,
+          latencyMs: Date.now() - started,
+          provider: this.name,
+          model: this.model,
+          promptTokens: body.usage?.prompt_tokens,
+          completionTokens: body.usage?.completion_tokens,
+          error: content ? null : "LLM returned an empty response",
+        };
+      } catch (err) {
+        const aborted =
+          err instanceof DOMException &&
+          (err.name === "TimeoutError" || err.name === "AbortError");
+        // Timeout is retryable
+        if (aborted && attempt < MAX_RETRIES) continue;
         return {
           content: "",
           latencyMs: Date.now() - started,
           provider: this.name,
           model: this.model,
-          error: `LLM provider returned HTTP ${response.status}${detail ? `: ${detail.slice(0, 200)}` : ""}`,
+          error: aborted
+            ? "AI request timed out. Please try again."
+            : "AI request failed. Check your network connection.",
+          structuredError: {
+            type: aborted ? "timeout" : "network",
+            message: aborted
+              ? "AI request timed out. Please try again."
+              : "AI request failed. Check your network connection.",
+            httpStatus: null,
+            providerCode: null,
+            model: this.model,
+          },
         };
       }
-
-      const body = (await response.json()) as {
-        choices?: { message?: { content?: string } }[];
-        usage?: { prompt_tokens?: number; completion_tokens?: number };
-      };
-      const content = body.choices?.[0]?.message?.content ?? "";
-      return {
-        content,
-        latencyMs: Date.now() - started,
-        provider: this.name,
-        model: this.model,
-        promptTokens: body.usage?.prompt_tokens,
-        completionTokens: body.usage?.completion_tokens,
-        error: content ? null : "LLM returned an empty response",
-      };
-    } catch (err) {
-      const aborted =
-        err instanceof DOMException &&
-        (err.name === "TimeoutError" || err.name === "AbortError");
-      return {
-        content: "",
-        latencyMs: Date.now() - started,
-        provider: this.name,
-        model: this.model,
-        error: aborted ? "LLM request timed out" : "LLM request failed",
-      };
     }
+
+    // Should never reach here, but TypeScript needs it
+    return {
+      content: "",
+      latencyMs: Date.now() - started,
+      provider: this.name,
+      model: this.model,
+      error: "Unexpected error in LLM retry loop",
+    };
   }
 }
 
-/**
- * Deterministic mock brain used when MOCK_MODE=true or no gateway key is set.
- * It understands the demo vertical (weather + a sensitive "book cab" action)
- * across the supported languages, so the whole pipeline runs offline and tests
- * never depend on external services.
- */
+// ---------------------------------------------------------------------------
+// Mock brain — deterministic offline demo/test provider
+// ---------------------------------------------------------------------------
+
 export class MockLLMProvider implements LLMProvider {
   readonly name = "mock-llm";
   readonly model = "mock-bharat-1b";
@@ -236,7 +407,7 @@ export class MockLLMProvider implements LLMProvider {
   private readonly weatherWords = [
     "weather", "mausam", "मौसम", "मौसम", "barish", "बारिश", "बरसात", "rain", "paani",
     "पानी", "paus", "पाऊस", "varsham", "వర్షం", "mazhai", "மழை", "brishti", "বৃষ্টি",
-    "male", "ಮಳೆ", "varsaadh", "વરસાદ", "meenh", "ਮੀਂਹ", "mazha", "മഴ", "temperature",
+    "male", "ಮಳೆ", "varsaaadh", "વરસાદ", "meenh", "ਮੀਂਹ", "mazha", "മഴ", "temperature",
     "गर्मी", "thandi", "ठंड", "forecast", "पूर्वानुमान", "गरम", "heat", "sardi",
   ];
 
@@ -346,8 +517,6 @@ export class MockLLMProvider implements LLMProvider {
     const lower = userText.toLowerCase();
     const language = this.detectLanguage(userText);
 
-    // Tool results are injected into the system prompt by the agent (JSON),
-    // as an array of { tool, args, status, result } entries.
     const context = `${userText}\n${systemText}`;
     const resultMatch = context.match(
       /__TOOL_RESULT__\s*([\s\S]*?)(?:__END__|$)/,
@@ -446,12 +615,7 @@ export class MockLLMProvider implements LLMProvider {
     return byLang[lang] ?? byLang["en-IN"];
   }
 
-  /**
-   * Mock judge: deterministic 0–1 score of one completed turn. Parses the
-   * turn JSON from the user message and applies the exact same rubric as the
-   * shared heuristic scorer, so mock mode scores identically to the real
-   * judge's fallback path.
-   */
+  /** Mock judge: deterministic 0–1 score of one completed turn. */
   private judge(userContent: string): Record<string, unknown> {
     const turn = this.parseJudgeTurn(userContent);
     const h = heuristicScore({
@@ -463,7 +627,6 @@ export class MockLLMProvider implements LLMProvider {
     return { score: h.score, criteria: h.criteria, notes: h.notes };
   }
 
-  /** Defensively extract the turn fields the judge rubric needs. */
   private parseJudgeTurn(userContent: string): {
     responseText: string;
     detectedLanguage: string | null;
@@ -496,7 +659,6 @@ export class MockLLMProvider implements LLMProvider {
     };
   }
 
-  /** Best-effort language detection from script + keywords for the mock. */
   private detectLanguage(text: string): string {
     if (/[తెలుగు\u0C00-\u0C7F]/.test(text)) return "te-IN";
     if (/[\u0B80-\u0BFF]/.test(text)) return "ta-IN";
@@ -505,34 +667,29 @@ export class MockLLMProvider implements LLMProvider {
     if (/[\u0D00-\u0D7F]/.test(text)) return "ml-IN";
     if (/[\u0A80-\u0AFF]/.test(text)) return "gu-IN";
     if (/[\u0A00-\u0A7F]/.test(text)) return "pa-IN";
-    // Marathi keywords first — Devanagari alone could be Hindi or Marathi.
     if (/कॅब|उद्या|पाऊस|हवामान/.test(text)) return "mr-IN";
     if (/[\u0900-\u097F]/.test(text)) return "hi-IN";
     return "en-IN";
   }
 }
 
+// ---------------------------------------------------------------------------
+// Provider factory — vendor-independent by design:
+//   MOCK_MODE=true or no keys at all  → mock (fully offline demo/tests)
+//   LLM_API_KEY set                   → any OpenAI-compatible endpoint
+//   VLY_INTEGRATION_KEY set           → the VLY AI gateway
+// An explicit OpenAI-compatible key wins over the gateway key.
+// ---------------------------------------------------------------------------
+
 export interface LLMProviderConfig {
   mockMode: boolean;
-  /** VLY gateway deployment token (VLY_INTEGRATION_KEY). Empty → not used. */
   apiKey: string;
-  /** Model id on the VLY gateway, e.g. "gpt-5-mini". */
   model?: string;
-  /** API key for an OpenAI-compatible endpoint (LLM_API_KEY). */
   openAiApiKey?: string;
-  /** Base URL for the OpenAI-compatible endpoint (LLM_BASE_URL). */
   openAiBaseUrl?: string;
-  /** Model id for the OpenAI-compatible endpoint (LLM_MODEL). */
   openAiModel?: string;
 }
 
-/**
- * Provider factory — vendor-independent by design:
- *   MOCK_MODE=true or no keys at all  → mock (fully offline demo/tests)
- *   LLM_API_KEY set                    → any OpenAI-compatible endpoint
- *   VLY_INTEGRATION_KEY set            → the VLY AI gateway
- * An explicit OpenAI-compatible key wins over the gateway key.
- */
 export function createLLMProvider(config: LLMProviderConfig): LLMProvider {
   const useMock = config.mockMode || (!config.apiKey && !config.openAiApiKey);
   if (useMock) return new MockLLMProvider();

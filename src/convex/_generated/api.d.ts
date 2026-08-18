@@ -20,6 +20,7 @@ import type * as auth from "../auth.js";
 import type * as auth_emailOtp from "../auth/emailOtp.js";
 import type * as crons from "../crons.js";
 import type * as eval from "../eval.js";
+import type * as health from "../health.js";
 import type * as http from "../http.js";
 import type * as tools_index from "../tools/index.js";
 import type * as tools_weather from "../tools/weather.js";
@@ -46,6 +47,7 @@ declare const fullApi: ApiFromModules<{
   "auth/emailOtp": typeof auth_emailOtp;
   crons: typeof crons;
   eval: typeof eval;
+  health: typeof health;
   http: typeof http;
   "tools/index": typeof tools_index;
   "tools/weather": typeof tools_weather;

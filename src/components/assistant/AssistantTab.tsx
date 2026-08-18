@@ -150,7 +150,15 @@ export default function AssistantTab() {
 
       if (activeConvId === null) setActiveConvId(res.conversationId);
       setLastResponse(res);
-      setStage("speaking");
+
+      // Show user-friendly error if the LLM failed
+      if (res.status === "error" && res.errorMessage) {
+        toast.error(res.errorMessage, { duration: 6000 });
+      }
+
+      if (res.status !== "error") {
+        setStage("speaking");
+      }
 
       if (res.audioUrl) {
         const audio = new Audio(res.audioUrl);
@@ -173,9 +181,20 @@ export default function AssistantTab() {
       }
     } catch (err) {
       console.error("Agent run failed:", err);
-      toast.error(
-        err instanceof Error ? err.message : "The agent hit an error. Try again.",
-      );
+      // Map common Convex/server errors to friendly messages
+      const raw = err instanceof Error ? err.message : String(err);
+      let friendly = "Something went wrong. Please try again.";
+      if (raw.includes("401") || raw.includes("authentication"))
+        friendly = "AI authentication failed. Check the API key.";
+      else if (raw.includes("429") || raw.includes("rate limit"))
+        friendly = "AI is temporarily rate-limited. Please try again.";
+      else if (raw.includes("502") || raw.includes("503") || raw.includes("504"))
+        friendly = "AI provider is temporarily unavailable. Please try again.";
+      else if (raw.includes("timeout"))
+        friendly = "AI request timed out. Please try again.";
+      else if (raw.includes("network") || raw.includes("fetch"))
+        friendly = "Unable to connect to the AI service.";
+      toast.error(friendly, { duration: 5000 });
     } finally {
       processingRef.current = false;
       setIsProcessing(false);
@@ -419,6 +438,7 @@ export default function AssistantTab() {
               <div className="min-w-0 max-w-[85%]">
                 <div className="rounded-2xl rounded-bl-md border border-border/70 bg-card px-4 py-3 text-sm leading-6 text-foreground/90">
                   {lastResponse.responseText ||
+                    lastResponse.errorMessage ||
                     "I couldn't generate a response. Please try again."}
                   {lastResponse.status === "pending_approval" && (
                     <div className="mt-2 flex items-center gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-700">

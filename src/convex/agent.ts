@@ -103,10 +103,7 @@ function responderSystemPrompt(
 }
 
 // ---------------------------------------------------------------------------
-// Self-evaluation — a lightweight runtime check of response quality. Runs on
-// every turn at zero extra latency; the richer LLM-as-judge layer (ai/judge.ts)
-// scores the same turns asynchronously afterwards. Both share one rubric via
-// ai/scoring.ts so their numbers agree.
+// Self-evaluation
 // ---------------------------------------------------------------------------
 
 function selfEvaluate(opts: {
@@ -122,6 +119,40 @@ function selfEvaluate(opts: {
     totalLatencyMs: opts.totalLatencyMs,
   });
   return { score: result.score, notes: result.notes };
+}
+
+// ---------------------------------------------------------------------------
+// Map LLM structured errors to user-friendly messages (never expose internals)
+// ---------------------------------------------------------------------------
+
+function friendlyErrorMessage(
+  llmError: string | null,
+  structuredError: { type?: string; message?: string } | undefined,
+): string {
+  if (structuredError?.message) return structuredError.message;
+  if (!llmError) return "";
+
+  const lower = llmError.toLowerCase();
+  if (lower.includes("401") || lower.includes("authentication") || lower.includes("auth"))
+    return "AI authentication failed. Check the OpenRouter API key.";
+  if (lower.includes("403") || lower.includes("denied"))
+    return "AI provider access was denied. Check the selected model/provider.";
+  if (lower.includes("429") || lower.includes("rate limit"))
+    return "AI is temporarily rate-limited. Please try again.";
+  if (lower.includes("502") || lower.includes("503") || lower.includes("504"))
+    return "AI provider is temporarily unavailable. Please try again.";
+  if (lower.includes("404") || lower.includes("not found"))
+    return "AI model not found. Check the model configuration.";
+  if (lower.includes("timeout"))
+    return "AI request timed out. Please try again.";
+  if (lower.includes("empty"))
+    return "The AI returned an empty response. Please try again.";
+  if (lower.includes("network") || lower.includes("fetch"))
+    return "Unable to connect to the AI service. Check your connection.";
+  if (lower.includes("llm_api_key") || lower.includes("openrouter"))
+    return "AI configuration is incomplete. Check the API key in the Convex dashboard.";
+
+  return "The AI service is temporarily unavailable. Please try again.";
 }
 
 // ---------------------------------------------------------------------------
@@ -156,302 +187,422 @@ export const runAgent = action({
       textPreview: text.slice(0, 80),
     });
 
-    // ---- 1. resolve conversation (memory) -------------------------------
-    let conversationId = args.conversationId ?? null;
-    if (conversationId) {
-      const conv = await ctx.runQuery(internal.agentDb.getConversationById, {
+    try {
+      // ---- 1. resolve conversation (memory) -------------------------------
+      let conversationId = args.conversationId ?? null;
+      if (conversationId) {
+        const conv = await ctx.runQuery(internal.agentDb.getConversationById, {
+          conversationId,
+        }).catch(() => null);
+        if (!conv || conv.userId !== userId) {
+          conversationId = null;
+        }
+      }
+
+      const isFirstMessage = !conversationId;
+      if (!conversationId) {
+        conversationId = await ctx.runMutation(
+          internal.agentDb.createConversationInternal,
+          {
+            userId: userId ?? undefined,
+            title: text.slice(0, 40) || "New conversation",
+            source,
+          },
+        );
+      }
+
+      // ---- 2. plan ---------------------------------------------------------
+      const history = await ctx.runQuery(internal.agentDb.getConversationHistory, {
         conversationId,
-      }).catch(() => null);
-      if (!conv || conv.userId !== userId) {
-        conversationId = null;
-      }
-    }
-
-    const isFirstMessage = !conversationId;
-    if (!conversationId) {
-      conversationId = await ctx.runMutation(
-        internal.agentDb.createConversationInternal,
-        {
-          userId: userId ?? undefined,
-          title: text.slice(0, 40) || "New conversation",
-          source,
-        },
-      );
-    }
-
-    // ---- 2. plan ---------------------------------------------------------
-    const history = await ctx.runQuery(internal.agentDb.getConversationHistory, {
-      conversationId,
-      limit: 8,
-    });
-    const llm = createLLMProvider({
-      mockMode: isMockMode(),
-      apiKey: env("VLY_INTEGRATION_KEY"),
-      model: env("AGENT_LLM_MODEL") || undefined,
-      openAiApiKey: env("LLM_API_KEY") || undefined,
-      openAiBaseUrl: env("LLM_BASE_URL") || undefined,
-      openAiModel: env("LLM_MODEL") || undefined,
-    });
-
-    const plannerMessages: LLMMessage[] = [
-      { role: "system", content: plannerSystemPrompt(new Date().toDateString()) },
-      ...history
-        .slice()
-        .reverse()
-        .map((m): LLMMessage => ({ role: toLlmRole(m.role), content: m.content })),
-      {
-        role: "user",
-        content: [
-          `User's message: "${text}"`,
-          `Detected language: ${languageCode ?? "unknown"}`,
-        ].join("\n"),
-      },
-    ];
-
-    let plan: { intent?: string; toolCalls?: { name?: string; args?: unknown }[] } = {};
-    let llmLatencyMs = 0;
-    let llmPlanError: string | null = null;
-    const planResult = await llm.complete(plannerMessages, {
-      temperature: 0.1,
-      maxTokens: 400,
-    });
-    llmLatencyMs += planResult.latencyMs;
-    if (planResult.error) {
-      llmPlanError = planResult.error;
-    } else {
-      plan = parseLlmJson<{ intent?: string; toolCalls?: { name?: string; args?: unknown }[] }>(
-        planResult.content,
-      ) ?? {};
-    }
-
-    // ---- 3. normalize + gate tool calls ----------------------------------
-    const rawCalls = (plan.toolCalls ?? []).slice(0, MAX_TOOL_CALLS);
-    const toolCalls: ToolCallRecord[] = [];
-    for (const raw of rawCalls) {
-      const name = typeof raw.name === "string" ? raw.name : "";
-      const tool = getTool(name);
-      if (!tool) continue;
-      const args = sanitizeArgs(raw.args);
-      toolCalls.push({
-        name: tool.name,
-        args,
-        requiresApproval: tool.requiresApproval,
-        status: "pending",
+        limit: 8,
       });
-    }
+      const llm = createLLMProvider({
+        mockMode: isMockMode(),
+        apiKey: env("VLY_INTEGRATION_KEY"),
+        model: env("AGENT_LLM_MODEL") || undefined,
+        openAiApiKey: env("LLM_API_KEY") || undefined,
+        openAiBaseUrl: env("LLM_BASE_URL") || undefined,
+        openAiModel: env("LLM_MODEL") || undefined,
+      });
 
-    // Execute safe tools immediately; sensitive ones become approvals.
-    const approvalIds: Id<"approvals">[] = [];
-    let toolLatencyMs = 0;
-    const toApprove = toolCalls.filter((t) => t.requiresApproval);
-    const toRun = toolCalls.filter((t) => !t.requiresApproval);
+      const plannerMessages: LLMMessage[] = [
+        { role: "system", content: plannerSystemPrompt(new Date().toDateString()) },
+        ...history
+          .slice()
+          .reverse()
+          .map((m): LLMMessage => ({ role: toLlmRole(m.role), content: m.content })),
+        {
+          role: "user",
+          content: [
+            `User's message: "${text}"`,
+            `Detected language: ${languageCode ?? "unknown"}`,
+          ].join("\n"),
+        },
+      ];
 
-    for (const call of toRun) {
-      const started = Date.now();
-      const tool = getTool(call.name)!;
-      try {
-        call.result = await tool.execute(call.args);
-        call.status = "executed";
-      } catch (err) {
-        call.result = {
-          error: err instanceof Error ? err.message : "Tool execution failed",
-        };
-        call.status = "executed";
+      let plan: { intent?: string; toolCalls?: { name?: string; args?: unknown }[] } = {};
+      let llmLatencyMs = 0;
+      let llmPlanError: string | null = null;
+      let llmPlanStructuredError: { type?: string; message?: string } | undefined;
+      const planResult = await llm.complete(plannerMessages, {
+        temperature: 0.1,
+        maxTokens: 400,
+      });
+      llmLatencyMs += planResult.latencyMs;
+      if (planResult.error) {
+        llmPlanError = planResult.error;
+        llmPlanStructuredError = planResult.structuredError;
+      } else {
+        plan = parseLlmJson<{ intent?: string; toolCalls?: { name?: string; args?: unknown }[] }>(
+          planResult.content,
+        ) ?? {};
       }
-      call.latencyMs = Date.now() - started;
-      toolLatencyMs += call.latencyMs;
-    }
 
-    for (const call of toApprove) {
-      const approvalId = await ctx.runMutation(internal.agentDb.createApproval, {
+      // If the planner LLM call failed, return a structured error immediately
+      // rather than continuing with an empty plan and a confusing second failure.
+      if (llmPlanError) {
+        const userMessage = friendlyErrorMessage(llmPlanError, llmPlanStructuredError);
+        logEvent({
+          event: "agent.llm_error",
+          requestId,
+          userId,
+          phase: "planner",
+          error: llmPlanError,
+          errorType: llmPlanStructuredError?.type ?? "unknown",
+        });
+
+        // Still persist the run so Insights can track it
+        const runId = await ctx.runMutation(internal.agentDb.recordAgentRun, {
+          userId: userId ?? undefined,
+          conversationId: conversationId ?? undefined,
+          requestId,
+          inputType: source,
+          transcript: text,
+          detectedLanguage: languageCode ?? undefined,
+          languageProbability: args.languageProbability ?? undefined,
+          intent: undefined,
+          toolCalls: [],
+          responseText: undefined,
+          responseLanguage: languageCode ?? undefined,
+          sttLatencyMs: args.sttLatencyMs ?? undefined,
+          llmLatencyMs,
+          toolLatencyMs: 0,
+          ttsLatencyMs: 0,
+          totalLatencyMs: Date.now() - totalStartedAt,
+          llmProvider: llm.name,
+          llmModel: llm.model,
+          ttsProvider: "browser",
+          evalScore: 0,
+          evalNotes: "llm_error",
+          status: "error",
+          errorType: llmPlanStructuredError?.type ?? "llm",
+          errorMessage: llmPlanError,
+        });
+
+        return {
+          ok: false,
+          requestId,
+          runId,
+          conversationId,
+          status: "error",
+          transcript: text,
+          detectedLanguage: languageCode ?? null,
+          languageProbability: args.languageProbability ?? null,
+          intent: null,
+          toolCalls: [],
+          responseText: "",
+          responseLanguage: languageCode ?? null,
+          audioUrl: null,
+          ttsProvider: "browser",
+          ttsLatencyMs: 0,
+          sttLatencyMs: args.sttLatencyMs ?? null,
+          llmLatencyMs,
+          toolLatencyMs: 0,
+          totalLatencyMs: Date.now() - totalStartedAt,
+          llmProvider: llm.name,
+          llmModel: llm.model,
+          evalScore: 0,
+          approvals: [],
+          errorMessage: userMessage,
+        };
+      }
+
+      // ---- 3. normalize + gate tool calls ----------------------------------
+      const rawCalls = (plan.toolCalls ?? []).slice(0, MAX_TOOL_CALLS);
+      const toolCalls: ToolCallRecord[] = [];
+      for (const raw of rawCalls) {
+        const name = typeof raw.name === "string" ? raw.name : "";
+        const tool = getTool(name);
+        if (!tool) continue;
+        const args = sanitizeArgs(raw.args);
+        toolCalls.push({
+          name: tool.name,
+          args,
+          requiresApproval: tool.requiresApproval,
+          status: "pending",
+        });
+      }
+
+      // Execute safe tools immediately; sensitive ones become approvals.
+      const approvalIds: Id<"approvals">[] = [];
+      let toolLatencyMs = 0;
+      const toApprove = toolCalls.filter((t) => t.requiresApproval);
+      const toRun = toolCalls.filter((t) => !t.requiresApproval);
+
+      for (const call of toRun) {
+        const started = Date.now();
+        const tool = getTool(call.name)!;
+        try {
+          call.result = await tool.execute(call.args);
+          call.status = "executed";
+        } catch (err) {
+          call.result = {
+            error: err instanceof Error ? err.message : "Tool execution failed",
+          };
+          call.status = "executed";
+        }
+        call.latencyMs = Date.now() - started;
+        toolLatencyMs += call.latencyMs;
+      }
+
+      for (const call of toApprove) {
+        const approvalId = await ctx.runMutation(internal.agentDb.createApproval, {
+          userId: userId ?? undefined,
+          conversationId: conversationId ?? undefined,
+          toolName: call.name,
+          args: call.args,
+          summary: summarizeToolCall(call.name, call.args),
+        });
+        approvalIds.push(approvalId);
+        call.status = "pending";
+      }
+
+      const hasPendingApprovals = approvalIds.length > 0;
+
+      // ---- 4. answer -------------------------------------------------------
+      const toolResultsJson = toolCalls.length
+        ? JSON.stringify(
+            toolCalls.map((t) => ({
+              tool: t.name,
+              args: t.args,
+              status: t.status === "executed" ? "done" : "pending_approval",
+              result: t.result ?? null,
+            })),
+          ).slice(0, MAX_TOOL_RESULT_CHARS)
+        : null;
+
+      const responderMessages: LLMMessage[] = [
+        {
+          role: "system",
+          content: responderSystemPrompt(languageCode, toolResultsJson),
+        },
+        ...history
+          .slice()
+          .reverse()
+          .map((m): LLMMessage => ({ role: toLlmRole(m.role), content: m.content })),
+        { role: "user", content: text },
+      ];
+
+      const answerResult = await llm.complete(responderMessages, {
+        temperature: 0.5,
+        maxTokens: 500,
+      });
+      llmLatencyMs += answerResult.latencyMs;
+
+      const responseText = (answerResult.content || "").trim();
+      const responseLanguage = languageCode ?? null;
+
+      // ---- 5. speak (browser TTS) ------------------------------------------
+      const audioUrl = null;
+      const ttsProviderName = "browser";
+      const ttsLatencyMs = 0;
+
+      const totalLatencyMs = Date.now() - totalStartedAt;
+      const failedTurn = !responseText || !!answerResult.error;
+      const runStatus: "success" | "error" | "pending_approval" = failedTurn
+        ? "error"
+        : hasPendingApprovals
+          ? "pending_approval"
+          : "success";
+
+      // Build a user-friendly error message if the answer LLM call failed
+      const answerErrorMessage = failedTurn && answerResult.error
+        ? friendlyErrorMessage(answerResult.error, answerResult.structuredError)
+        : null;
+
+      const eval_ =
+        runStatus !== "success"
+          ? { score: 0, notes: [runStatus === "error" ? "generation failed" : "awaiting approval"] }
+          : selfEvaluate({
+              responseText,
+              toolCalls,
+              languageCode: responseLanguage,
+              totalLatencyMs,
+            });
+
+      // ---- 6. persist -------------------------------------------------------
+      await ctx.runMutation(internal.agentDb.insertMessage, {
+        conversationId,
+        userId: userId ?? undefined,
+        role: "user",
+        content: text,
+        languageCode: languageCode ?? undefined,
+        model: llm.model,
+      });
+      await ctx.runMutation(internal.agentDb.insertMessage, {
+        conversationId,
+        userId: userId ?? undefined,
+        role: "assistant",
+        content: responseText || "I couldn't generate a response. Please try again.",
+        languageCode: responseLanguage ?? undefined,
+        toolCalls: toolCalls.map((t) => ({
+          name: t.name,
+          args: t.args,
+          status: t.status,
+          result: t.result ?? null,
+          latencyMs: t.latencyMs ?? null,
+        })),
+        model: llm.model,
+        latencyMs: llmLatencyMs,
+      });
+      await ctx.runMutation(internal.agentDb.touchConversation, {
+        conversationId,
+        title: isFirstMessage ? text.slice(0, 40) : undefined,
+        messageDelta: 2,
+      });
+
+      const runId = await ctx.runMutation(internal.agentDb.recordAgentRun, {
         userId: userId ?? undefined,
         conversationId: conversationId ?? undefined,
-        toolName: call.name,
-        args: call.args,
-        summary: summarizeToolCall(call.name, call.args),
+        requestId,
+        inputType: source,
+        transcript: text,
+        detectedLanguage: languageCode ?? undefined,
+        languageProbability: args.languageProbability ?? undefined,
+        intent: plan.intent,
+        toolCalls: toolCalls.map((t) => ({
+          name: t.name,
+          args: t.args,
+          status: t.status,
+          result: t.result ?? null,
+          latencyMs: t.latencyMs ?? null,
+        })),
+        responseText: responseText || undefined,
+        responseLanguage: responseLanguage ?? undefined,
+        sttLatencyMs: args.sttLatencyMs ?? undefined,
+        llmLatencyMs: llmLatencyMs || undefined,
+        toolLatencyMs: toolLatencyMs || undefined,
+        ttsLatencyMs: ttsLatencyMs || undefined,
+        totalLatencyMs,
+        llmProvider: llm.name,
+        llmModel: llm.model,
+        ttsProvider: ttsProviderName,
+        evalScore: eval_.score,
+        evalNotes: eval_.notes.join(", "),
+        status: runStatus,
+        errorType: llmPlanError || answerResult.error ? "llm" : undefined,
+        errorMessage: llmPlanError ?? answerResult.error ?? undefined,
       });
-      approvalIds.push(approvalId);
-      call.status = "pending";
+
+      logEvent({
+        event: "agent.done",
+        requestId,
+        userId,
+        conversationId,
+        status: runStatus,
+        intent: plan.intent ?? null,
+        toolCalls: toolCalls.map((t) => `${t.name}:${t.status}`),
+        llmLatencyMs,
+        toolLatencyMs,
+        ttsLatencyMs,
+        totalLatencyMs,
+        evalScore: eval_.score,
+        approvals: approvalIds.length,
+      });
+
+      return {
+        ok: runStatus !== "error",
+        requestId,
+        runId,
+        conversationId,
+        status: runStatus,
+        transcript: text,
+        detectedLanguage: languageCode ?? null,
+        languageProbability: args.languageProbability ?? null,
+        intent: plan.intent ?? null,
+        toolCalls: toolCalls.map((t) => ({
+          name: t.name,
+          args: t.args,
+          status: t.status,
+          result: t.result ?? null,
+          latencyMs: t.latencyMs ?? null,
+        })),
+        responseText,
+        responseLanguage,
+        audioUrl,
+        ttsProvider: ttsProviderName,
+        ttsLatencyMs,
+        sttLatencyMs: args.sttLatencyMs ?? null,
+        llmLatencyMs,
+        toolLatencyMs,
+        totalLatencyMs,
+        llmProvider: llm.name,
+        llmModel: llm.model,
+        evalScore: eval_.score,
+        approvals: hasPendingApprovals
+          ? approvalIds.map((id, i) => ({
+              approvalId: id,
+              toolName: toApprove[i]?.name ?? "unknown",
+              summary: summarizeToolCall(
+                toApprove[i]?.name ?? "unknown",
+                toApprove[i]?.args ?? {},
+              ),
+            }))
+          : [],
+        errorMessage: answerErrorMessage,
+      };
+    } catch (err) {
+      // Catch-all: never let the Convex action throw an unhandled exception.
+      // Return a structured error the frontend can display gracefully.
+      const totalLatencyMs = Date.now() - totalStartedAt;
+      const errorMessage = "Something went wrong. Please try again.";
+
+      logEvent({
+        event: "agent.unhandled_error",
+        requestId,
+        userId,
+        error: err instanceof Error ? err.message : "unknown",
+        errorType: err instanceof Error ? err.name : "UnknownError",
+        totalLatencyMs,
+      });
+
+      return {
+        ok: false,
+        requestId,
+        runId: "" as Id<"agentRuns">,
+        conversationId: (args.conversationId ?? "") as Id<"conversations">,
+        status: "error",
+        transcript: text,
+        detectedLanguage: languageCode ?? null,
+        languageProbability: args.languageProbability ?? null,
+        intent: null,
+        toolCalls: [],
+        responseText: "",
+        responseLanguage: null,
+        audioUrl: null,
+        ttsProvider: "browser",
+        ttsLatencyMs: 0,
+        sttLatencyMs: args.sttLatencyMs ?? null,
+        llmLatencyMs: 0,
+        toolLatencyMs: 0,
+        totalLatencyMs,
+        llmProvider: "unknown",
+        llmModel: "unknown",
+        evalScore: 0,
+        approvals: [],
+        errorMessage,
+      };
     }
-
-    const hasPendingApprovals = approvalIds.length > 0;
-
-    // ---- 4. answer -------------------------------------------------------
-    const toolResultsJson = toolCalls.length
-      ? JSON.stringify(
-          toolCalls.map((t) => ({
-            tool: t.name,
-            args: t.args,
-            status: t.status === "executed" ? "done" : "pending_approval",
-            result: t.result ?? null,
-          })),
-        ).slice(0, MAX_TOOL_RESULT_CHARS)
-      : null;
-
-    const responderMessages: LLMMessage[] = [
-      {
-        role: "system",
-        content: responderSystemPrompt(languageCode, toolResultsJson),
-      },
-      ...history
-        .slice()
-        .reverse()
-        .map((m): LLMMessage => ({ role: toLlmRole(m.role), content: m.content })),
-      { role: "user", content: text },
-    ];
-
-    const answerResult = await llm.complete(responderMessages, {
-      temperature: 0.5,
-      maxTokens: 500,
-    });
-    llmLatencyMs += answerResult.latencyMs;
-
-    const responseText = (answerResult.content || "").trim();
-    const responseLanguage = languageCode ?? null;
-
-    // ---- 5. speak — the client synthesizes the answer with the browser's
-    // speechSynthesis, so no TTS vendor or API key is involved. --------------
-    const audioUrl = null;
-    const ttsProviderName = "browser";
-    const ttsLatencyMs = 0;
-
-    const totalLatencyMs = Date.now() - totalStartedAt;
-    const failedTurn = !responseText || !!answerResult.error;
-    const runStatus: "success" | "error" | "pending_approval" = failedTurn
-      ? "error"
-      : hasPendingApprovals
-        ? "pending_approval"
-        : "success";
-    const eval_ =
-      runStatus !== "success"
-        ? { score: 0, notes: [runStatus === "error" ? "generation failed" : "awaiting approval"] }
-        : selfEvaluate({
-            responseText,
-            toolCalls,
-            languageCode: responseLanguage,
-            totalLatencyMs,
-          });
-
-    // ---- 6. persist -------------------------------------------------------
-    await ctx.runMutation(internal.agentDb.insertMessage, {
-      conversationId,
-      userId: userId ?? undefined,
-      role: "user",
-      content: text,
-      languageCode: languageCode ?? undefined,
-      model: llm.model,
-    });
-    await ctx.runMutation(internal.agentDb.insertMessage, {
-      conversationId,
-      userId: userId ?? undefined,
-      role: "assistant",
-      content: responseText || "I couldn't generate a response. Please try again.",
-      languageCode: responseLanguage ?? undefined,
-      toolCalls: toolCalls.map((t) => ({
-        name: t.name,
-        args: t.args,
-        status: t.status,
-        result: t.result ?? null,
-        latencyMs: t.latencyMs ?? null,
-      })),
-      model: llm.model,
-      latencyMs: llmLatencyMs,
-    });
-    await ctx.runMutation(internal.agentDb.touchConversation, {
-      conversationId,
-      title: isFirstMessage ? text.slice(0, 40) : undefined,
-      messageDelta: 2,
-    });
-
-    const runId = await ctx.runMutation(internal.agentDb.recordAgentRun, {
-      userId: userId ?? undefined,
-      conversationId: conversationId ?? undefined,
-      requestId,
-      inputType: source,
-      transcript: text,
-      detectedLanguage: languageCode ?? undefined,
-      languageProbability: args.languageProbability ?? undefined,
-      intent: plan.intent,
-      toolCalls: toolCalls.map((t) => ({
-        name: t.name,
-        args: t.args,
-        status: t.status,
-        result: t.result ?? null,
-        latencyMs: t.latencyMs ?? null,
-      })),
-      responseText: responseText || undefined,
-      responseLanguage: responseLanguage ?? undefined,
-      sttLatencyMs: args.sttLatencyMs ?? undefined,
-      llmLatencyMs: llmLatencyMs || undefined,
-      toolLatencyMs: toolLatencyMs || undefined,
-      ttsLatencyMs: ttsLatencyMs || undefined,
-      totalLatencyMs,
-      llmProvider: llm.name,
-      llmModel: llm.model,
-      ttsProvider: ttsProviderName,
-      evalScore: eval_.score,
-      evalNotes: eval_.notes.join(", "),
-      status: runStatus,
-      errorType: llmPlanError || answerResult.error ? "llm" : undefined,
-      errorMessage: llmPlanError ?? answerResult.error ?? undefined,
-    });
-
-    logEvent({
-      event: "agent.done",
-      requestId,
-      userId,
-      conversationId,
-      status: runStatus,
-      intent: plan.intent ?? null,
-      toolCalls: toolCalls.map((t) => `${t.name}:${t.status}`),
-      llmLatencyMs,
-      toolLatencyMs,
-      ttsLatencyMs,
-      totalLatencyMs,
-      evalScore: eval_.score,
-      approvals: approvalIds.length,
-    });
-
-    return {
-      ok: true,
-      requestId,
-      runId,
-      conversationId,
-      status: runStatus,
-      transcript: text,
-      detectedLanguage: languageCode ?? null,
-      languageProbability: args.languageProbability ?? null,
-      intent: plan.intent ?? null,
-      toolCalls: toolCalls.map((t) => ({
-        name: t.name,
-        args: t.args,
-        status: t.status,
-        result: t.result ?? null,
-        latencyMs: t.latencyMs ?? null,
-      })),
-      responseText,
-      responseLanguage,
-      audioUrl,
-      ttsProvider: ttsProviderName,
-      ttsLatencyMs,
-      sttLatencyMs: args.sttLatencyMs ?? null,
-      llmLatencyMs,
-      toolLatencyMs,
-      totalLatencyMs,
-      llmProvider: llm.name,
-      llmModel: llm.model,
-      evalScore: eval_.score,
-      approvals: hasPendingApprovals
-        ? approvalIds.map((id, i) => ({
-            approvalId: id,
-            toolName: toApprove[i]?.name ?? "unknown",
-            summary: summarizeToolCall(
-              toApprove[i]?.name ?? "unknown",
-              toApprove[i]?.args ?? {},
-            ),
-          }))
-        : [],
-    };
   },
 });
 
@@ -540,7 +691,6 @@ export const resumeApproval = action({
     const responseText = (answerResult.content || "").trim();
     const llmLatencyMs = answerResult.latencyMs;
 
-    // Speech is synthesized client-side (browser speechSynthesis).
     const audioUrl = null;
     const ttsProviderName = "browser";
     const ttsLatencyMs = 0;
@@ -548,6 +698,7 @@ export const resumeApproval = action({
     const totalLatencyMs = Date.now() - totalStartedAt;
     const failedTurn = !responseText || !!answerResult.error;
     const runStatus: "success" | "error" = failedTurn ? "error" : "success";
+
     const eval_ =
       runStatus !== "success"
         ? { score: 0, notes: ["generation failed"] }
@@ -644,7 +795,6 @@ export const resumeApproval = action({
 // helpers
 // ---------------------------------------------------------------------------
 
-/** Map a stored message role onto the LLM message shape (tool→assistant). */
 function toLlmRole(
   role: "user" | "assistant" | "tool",
 ): "system" | "user" | "assistant" {
@@ -652,7 +802,6 @@ function toLlmRole(
   return "assistant";
 }
 
-/** Keep tool args small and JSON-safe: only string/number/boolean scalars. */
 function sanitizeArgs(raw: unknown): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (!raw || typeof raw !== "object") return out;
@@ -716,4 +865,6 @@ export interface AgentResponse {
   llmModel: string;
   evalScore: number;
   approvals: { approvalId: Id<"approvals">; toolName: string; summary: string }[];
+  /** User-friendly error message — never exposes internals. */
+  errorMessage?: string | null;
 }
