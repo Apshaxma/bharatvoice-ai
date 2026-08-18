@@ -712,12 +712,6 @@ function CtaSection({ dashboardTarget }: { dashboardTarget: string }) {
           transition={{ duration: 0.5 }}
           className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-saffron to-saffron-bright px-5 py-10 text-center text-white sm:px-12 sm:py-14"
         >
-          <span
-            aria-hidden
-            className="pointer-events-none absolute -bottom-8 -right-4 select-none whitespace-nowrap text-[7rem] font-bold leading-none text-white/10 sm:text-[10rem]"
-          >
-            नमस्ते
-          </span>
           <div className="relative mx-auto max-w-xl">
             <h2 className="text-2xl font-bold tracking-tight sm:text-4xl">
               Namaste. Let&apos;s talk.

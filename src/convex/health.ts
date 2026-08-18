@@ -8,7 +8,7 @@
  */
 
 import { action } from "./_generated/server";
-import { createLLMProvider } from "./ai/llm";
+import { createLLMProvider, resolveModel } from "./ai/llm";
 
 function env(name: string): string {
   return process.env[name] ?? "";
@@ -72,7 +72,7 @@ export const healthCheck = action({
     if (!mock && hasOpenAiKey) {
       try {
         const baseUrlClean = (env("LLM_BASE_URL") || "https://openrouter.ai/api/v1").replace(/\/$/, "");
-        const testModel = model || "meta-llama/llama-3.1-8b-instruct:free";
+        const testModel = resolveModel(model || undefined);
 
         const response = await fetch(`${baseUrlClean}/chat/completions`, {
           method: "POST",
@@ -99,7 +99,6 @@ export const healthCheck = action({
           baseUrl: baseUrlClean,
           model: testModel,
           apiKeyConfigured: true,
-          apiKeyPrefix: openAiKey.slice(0, 8) + "...",
           responseBodyPreview: responseBody.slice(0, 500),
         }));
 

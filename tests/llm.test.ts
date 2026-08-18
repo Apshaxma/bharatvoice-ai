@@ -296,4 +296,18 @@ describe("LLM provider factory — vendor-independent", () => {
     });
     expect(p).toBeInstanceOf(OpenAICompatibleLLMProvider);
   });
+
+  test("OpenAI-compatible constructor resolves unreliable models", () => {
+    const p1 = new OpenAICompatibleLLMProvider({ apiKey: "sk-test", model: "openrouter/free" });
+    expect(p1.model).toBe("meta-llama/llama-3.1-8b-instruct:free");
+
+    const p2 = new OpenAICompatibleLLMProvider({ apiKey: "sk-test", model: "openrouter/auto" });
+    expect(p2.model).toBe("meta-llama/llama-3.1-8b-instruct:free");
+
+    const p3 = new OpenAICompatibleLLMProvider({ apiKey: "sk-test" });
+    expect(p3.model).toBe("meta-llama/llama-3.1-8b-instruct:free");
+
+    const p4 = new OpenAICompatibleLLMProvider({ apiKey: "sk-test", model: "google/gemma-2-9b-it:free" });
+    expect(p4.model).toBe("google/gemma-2-9b-it:free");
+  });
 });
