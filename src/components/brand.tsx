@@ -9,7 +9,7 @@ export function BharatVoiceMark({
   showWordmark?: boolean;
 }) {
   return (
-    <span className={cn("flex items-center gap-2.5", className)}>
+    <span className={cn("flex flex-col items-start gap-3", className)}>
       <span className="relative flex size-9 shrink-0 items-center justify-center rounded-xl bg-saffron shadow-[inset_0_-2px_0_rgba(0,0,0,0.18)]">
         {/* waveform bars */}
         <span className="flex h-4 items-end gap-[3px]">

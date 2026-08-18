@@ -180,7 +180,7 @@ function Navbar() {
           : "bg-transparent",
       )}
     >
-      <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
+      <div className="mx-auto flex min-h-16 max-w-6xl items-center justify-between px-4 py-3 sm:px-6">
         <Link to="/" aria-label="BharatVoice home">
           <BharatVoiceMark />
         </Link>

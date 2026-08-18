@@ -58,7 +58,7 @@ export default function DashboardLayout() {
         <aside className="sticky top-0 hidden h-screen flex-col border-r border-border/70 bg-card/50 px-4 py-5 lg:flex">
           <NavLink
             to="/"
-            className="mb-8 flex items-center gap-2.5 px-2"
+            className="mb-8 flex flex-col items-start px-2"
             aria-label="BharatVoice home"
           >
             <BharatVoiceMark />
