@@ -353,7 +353,14 @@ export default function InsightsTab() {
                       {run.evalScore != null ? run.evalScore.toFixed(2) : "—"}
                     </td>
                     <td className="py-2 pr-3">
-                      {run.judgeScore != null ? (
+                      {run.judgeStatus === "error" && run.judgeError ? (
+                        <Badge
+                          variant="destructive"
+                          className="px-2 py-0 text-[10px] font-medium"
+                        >
+                          error
+                        </Badge>
+                      ) : run.judgeScore != null ? (
                         <Badge
                           variant="outline"
                           className={cn(
@@ -368,10 +375,6 @@ export default function InsightsTab() {
                         >
                           {run.judgeScore.toFixed(2)}
                         </Badge>
-                      ) : run.judgeStatus === "error" ? (
-                        <span className="text-[10.5px] text-destructive/70">
-                          failed
-                        </span>
                       ) : (
                         <span className="text-[10.5px] text-muted-foreground">
                           —

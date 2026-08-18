@@ -89,6 +89,18 @@ describe("mock STT provider", () => {
     expect(result.languageCode).toBe("xx-XX");
     expect(/[\u0900-\u097F]/.test(result.transcript)).toBe(true);
   });
+
+  test("transcribe reports real latency (not zero)", async () => {
+    const result = await provider.transcribe({
+      audio,
+      mimeType: "audio/webm",
+      languageCode: "hi-IN",
+      mode: "transcribe",
+    });
+    // The mock sleeps 280–700 ms, so latencyMs must be > 200 at minimum
+    expect(result.latencyMs).toBeGreaterThan(200);
+    expect(result.latencyMs).toBeLessThan(2000);
+  });
 });
 
 describe("provider factory", () => {

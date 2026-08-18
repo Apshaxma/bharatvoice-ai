@@ -139,11 +139,12 @@ export const runJudgeEvaluation = action({
   args: { limit: v.optional(v.number()) },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
-    const userId = (identity?.subject ?? null) as Id<"users"> | null;
+    if (!identity) throw new Error("Authentication required");
+    const userId = identity.subject as Id<"users">;
     const limit = Math.min(Math.max(args.limit ?? 10, 1), 25);
 
     const runs = await ctx.runQuery(internal.agentDb.getRunsToEvaluate, {
-      userId: userId ?? undefined,
+      userId,
       limit,
     });
     if (runs.length === 0) {

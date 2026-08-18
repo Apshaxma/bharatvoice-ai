@@ -197,15 +197,19 @@ export const getRunsToEvaluate = internalQuery({
   },
   handler: async (ctx, args) => {
     const limit = Math.min(Math.max(args.limit ?? 20, 1), 100);
+    // Over-fetch then filter: judge errors (judgeScore set but judgeStatus
+    // "error") are included so the cron can re-judge them; only "done" runs
+    // are excluded. The extra headroom (limit*3) ensures we find enough after
+    // filtering.
     const recent = args.userId
       ? await ctx.db
           .query("agentRuns")
           .withIndex("by_user", (q) => q.eq("userId", args.userId))
           .order("desc")
-          .take(limit * 2)
-      : await ctx.db.query("agentRuns").order("desc").take(limit * 2);
+          .take(limit * 3)
+      : await ctx.db.query("agentRuns").order("desc").take(limit * 3);
     return recent
-      .filter((r) => r.judgeScore == null && r.judgeStatus !== "done")
+      .filter((r) => r.judgeStatus !== "done")
       .slice(0, limit);
   },
 });

@@ -125,7 +125,9 @@ export class MockSTTProvider implements SpeechToTextProvider {
 
   async transcribe(request: STTRequest): Promise<STTResult> {
     // Simulate provider latency so latency instrumentation is exercised.
+    const startMs = Date.now();
     await sleep(280 + Math.random() * 420);
+    const latencyMs = Date.now() - startMs;
 
     const pick = this.pickSample(request.languageCode, request.audio.byteLength);
     const transcript = this.render(pick.transcript, request.mode, pick.languageCode);
@@ -138,7 +140,7 @@ export class MockSTTProvider implements SpeechToTextProvider {
         ? null
         : 0.88 + Math.min(0.1, (request.audio.byteLength % 97) / 1000),
       providerRequestId: `mock_${request.audio.byteLength}_${Date.now().toString(36)}`,
-      latencyMs: 0,
+      latencyMs,
       error: null,
       errorType: null,
     };

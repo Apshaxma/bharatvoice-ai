@@ -546,18 +546,23 @@ export const resumeApproval = action({
     const ttsLatencyMs = 0;
 
     const totalLatencyMs = Date.now() - totalStartedAt;
-    const eval_ = selfEvaluate({
-      responseText,
-      toolCalls: executed,
-      languageCode: run.detectedLanguage ?? null,
-      totalLatencyMs,
-    });
+    const failedTurn = !responseText || !!answerResult.error;
+    const runStatus: "success" | "error" = failedTurn ? "error" : "success";
+    const eval_ =
+      runStatus !== "success"
+        ? { score: 0, notes: ["generation failed"] }
+        : selfEvaluate({
+            responseText,
+            toolCalls: executed,
+            languageCode: run.detectedLanguage ?? null,
+            totalLatencyMs,
+          });
 
     const finalToolCalls = [...(run.toolCalls ?? []), ...executed];
     await ctx.runMutation(internal.agentDb.updateAgentRun, {
       runId,
       patch: {
-        status: "success",
+        status: runStatus,
         responseText,
         responseLanguage: run.detectedLanguage,
         toolCalls: finalToolCalls,
@@ -568,6 +573,14 @@ export const resumeApproval = action({
         ttsProvider: ttsProviderName,
         evalScore: eval_.score,
         evalNotes: eval_.notes.join(", "),
+        judgeScore: undefined,
+        judgeStatus: undefined,
+        judgeCriteria: undefined,
+        judgeNotes: undefined,
+        judgeProvider: undefined,
+        judgeModel: undefined,
+        judgeLatencyMs: undefined,
+        judgeError: undefined,
       },
     });
 
@@ -608,7 +621,7 @@ export const resumeApproval = action({
       runId,
       conversationId: run.conversationId ?? null,
       requestId: run.requestId,
-      status: "success",
+      status: runStatus,
       responseText,
       responseLanguage: run.detectedLanguage ?? null,
       audioUrl,
@@ -656,7 +669,7 @@ export interface ResumeApprovalResponse {
   runId: Id<"agentRuns">;
   conversationId: Id<"conversations"> | null;
   requestId: string;
-  status: "success";
+  status: "success" | "error";
   responseText: string;
   responseLanguage: string | null;
   audioUrl: string | null;

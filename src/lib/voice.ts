@@ -169,6 +169,7 @@ export function startListeningSession(options: {
   let finalText = "";
   let interimText = "";
   let ended = false;
+  let errored = false;
 
   recognition.onresult = (event) => {
     let interim = "";
@@ -182,6 +183,7 @@ export function startListeningSession(options: {
   };
 
   recognition.onerror = (event) => {
+    errored = true;
     const map: Record<string, string> = {
       "not-allowed": "Microphone access denied. Allow the mic, or type instead.",
       "service-not-allowed": "Speech recognition is disabled in this browser.",
@@ -195,6 +197,7 @@ export function startListeningSession(options: {
   recognition.onend = () => {
     if (ended) return;
     ended = true;
+    if (errored) return;
     const transcript = finalText || interimText;
     options.onFinal?.(transcript.trim());
   };
