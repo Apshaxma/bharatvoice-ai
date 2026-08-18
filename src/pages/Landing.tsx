@@ -305,14 +305,6 @@ function Navbar() {
 function Hero({ dashboardTarget }: { dashboardTarget: string }) {
   return (
     <section className="relative overflow-hidden pt-28 pb-12 sm:pt-40 sm:pb-24">
-      {/* Devanagari watermark — responsive using clamp() */}
-      <span
-        aria-hidden
-        className="pointer-events-none absolute -top-2 right-0 select-none whitespace-nowrap font-[Noto_Sans_Devanagari] font-bold leading-none text-saffron/[0.07]"
-        style={{ fontSize: "clamp(5rem, 20vw, 16rem)" }}
-      >
-        भारतवॉइस
-      </span>
 
       <div className="relative mx-auto grid max-w-6xl items-center gap-8 px-4 sm:px-6 sm:gap-14 lg:grid-cols-[1.05fr_0.95fr]">
         <motion.div
