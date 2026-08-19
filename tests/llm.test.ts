@@ -14,8 +14,10 @@ import {
   VlyLLMProvider,
   createLLMProvider,
   extractJson,
+  nextRotationModel,
   parseLlmJson,
   resolveModel,
+  FREE_MODEL_ROTATION,
   type LLMMessage,
 } from "../src/convex/ai/llm";
 
@@ -317,5 +319,49 @@ describe("LLM provider factory — vendor-independent", () => {
 
     const p4 = new OpenAICompatibleLLMProvider({ apiKey: "sk-test", model: "google/gemma-2-9b-it:free" });
     expect(p4.model).toBe("google/gemma-2-9b-it:free");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Model rotation for free-tier rate-limit resilience
+// ---------------------------------------------------------------------------
+
+describe("model rotation — free-tier 429 resilience", () => {
+  test("rotation list has at least 5 models", () => {
+    expect(FREE_MODEL_ROTATION.length).toBeGreaterThanOrEqual(5);
+  });
+
+  test("rotation list starts with the primary fallback model", () => {
+    expect(FREE_MODEL_ROTATION[0]).toBe("google/gemma-4-31b-it:free");
+  });
+
+  test("rotation list entries are unique", () => {
+    const lower = FREE_MODEL_ROTATION.map((m) => m.toLowerCase());
+    expect(new Set(lower).size).toBe(lower.length);
+  });
+
+  test("nextRotationModel returns the next model in the list", () => {
+    const next = nextRotationModel("google/gemma-4-31b-it:free");
+    expect(next).toBe("google/gemma-4-26b-a4b-it:free");
+  });
+
+  test("nextRotationModel returns null at the end of the list", () => {
+    const last = FREE_MODEL_ROTATION[FREE_MODEL_ROTATION.length - 1];
+    expect(nextRotationModel(last)).toBeNull();
+  });
+
+  test("nextRotationModel returns null for unknown model", () => {
+    expect(nextRotationModel("some-random/model:free")).toBeNull();
+  });
+
+  test("nextRotationModel is case-insensitive", () => {
+    const next = nextRotationModel("GOOGLE/GEMMA-4-31B-IT:FREE");
+    expect(next).toBe("google/gemma-4-26b-a4b-it:free");
+  });
+
+  test("each rotation model resolves to itself (not to fallback)", () => {
+    for (const model of FREE_MODEL_ROTATION) {
+      expect(resolveModel(model)).toBe(model);
+    }
   });
 });

@@ -146,9 +146,22 @@ const UNRELIABLE_MODELS = new Set([
 ]);
 
 /** Reliable free models with Hindi support for fallback.
- *  Verified working: Google Gemma 4 — multilingual, chat, free tier.
- *  31B is primary, 26B is backup (faster, less rate-limited). */
+ *  Verified working as of Aug 2026. Order: preferred first. */
 const RELIABLE_FALLBACK_MODEL = "google/gemma-4-31b-it:free";
+
+/**
+ * Model rotation list for free-tier rate-limit resilience.
+ * When a 429 hits, the provider cycles to the next model in this list.
+ * All models are free, chat-capable, and support Hindi.
+ */
+export const FREE_MODEL_ROTATION: readonly string[] = [
+  "google/gemma-4-31b-it:free",
+  "google/gemma-4-26b-a4b-it:free",
+  "nvidia/nemotron-3-ultra-550b-a55b:free",
+  "nvidia/nemotron-3-super-120b-a12b:free",
+  "nvidia/nemotron-3.5-lightning:free",
+  "z-ai/glm-5.2:free",
+];
 
 /**
  * If the user configured a random-router model slug (e.g. "openrouter/free"),
@@ -161,6 +174,31 @@ export function resolveModel(requested: string | undefined): string {
     return RELIABLE_FALLBACK_MODEL;
   }
   return raw;
+}
+
+/**
+ * Check if a model is one of our known free-tier rotation models.
+ * Used to decide whether to rotate on 429 vs hard-fail.
+ */
+function isFreeRotationModel(model: string): boolean {
+  return FREE_MODEL_ROTATION.some(
+    (m) => m.toLowerCase() === model.toLowerCase(),
+  );
+}
+
+/**
+ * Get the next model in the rotation after the given model.
+ * Returns the next one, or null if we've exhausted the list.
+ */
+export function nextRotationModel(current: string): string | null {
+  const idx = FREE_MODEL_ROTATION.findIndex(
+    (m) => m.toLowerCase() === current.toLowerCase(),
+  );
+  if (idx === -1) return null;
+  // Next in the rotation, or null if we're at the end
+  return idx < FREE_MODEL_ROTATION.length - 1
+    ? FREE_MODEL_ROTATION[idx + 1]
+    : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -308,105 +346,129 @@ export class OpenAICompatibleLLMProvider implements LLMProvider {
   ): Promise<LLMResult> {
     const started = Date.now();
 
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      if (attempt > 0) {
-        const delay =
-          BASE_RETRY_DELAY_MS * Math.pow(2, attempt - 1) +
-          Math.random() * 500;
-        await sleep(delay);
-      }
+    // Model rotation: try up to 3 different models when hitting 429s
+    let currentModel = this.model;
+    const maxModelRotations = 3;
 
-      try {
-        const response = await fetch(`${this.baseUrl}/chat/completions`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${this.apiKey}`,
-          },
-          body: JSON.stringify({
-            model: this.model,
-            messages: messages.map((m) => ({ role: m.role, content: m.content })),
-            temperature: options.temperature ?? 0.4,
-            max_tokens: options.maxTokens ?? 700,
-          }),
-          signal: AbortSignal.timeout(this.timeoutMs),
-        });
+    for (let rotation = 0; rotation < maxModelRotations; rotation++) {
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        if (attempt > 0) {
+          const delay =
+            BASE_RETRY_DELAY_MS * Math.pow(2, attempt - 1) +
+            Math.random() * 500;
+          await sleep(delay);
+        }
 
-        if (!response.ok) {
-          const detail = await response.text().catch(() => "");
-          const structured = mapHttpToStructuredError(
-            response.status,
-            detail,
-            this.model,
-          );
+        try {
+          const response = await fetch(`${this.baseUrl}/chat/completions`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${this.apiKey}`,
+            },
+            body: JSON.stringify({
+              model: currentModel,
+              messages: messages.map((m) => ({ role: m.role, content: m.content })),
+              temperature: options.temperature ?? 0.4,
+              max_tokens: options.maxTokens ?? 700,
+            }),
+            signal: AbortSignal.timeout(this.timeoutMs),
+          });
 
-          // Retry only on transient errors (429, 5xx)
-          if (isRetryable(response.status) && attempt < MAX_RETRIES) {
-            console.log(
-              JSON.stringify({
-                service: "bharatvoice-llm",
-                event: "retry",
-                status: response.status,
-                attempt: attempt + 1,
-                model: this.model,
-                baseUrl: this.baseUrl.replace(/\/v1$/, ""),
-              }),
+          if (!response.ok) {
+            const detail = await response.text().catch(() => "");
+            const structured = mapHttpToStructuredError(
+              response.status,
+              detail,
+              currentModel,
             );
-            continue;
+
+            // 429 from a free-tier model → rotate to next model
+            if (response.status === 429 && isFreeRotationModel(currentModel)) {
+              const next = nextRotationModel(currentModel);
+              if (next) {
+                console.log(
+                  JSON.stringify({
+                    service: "bharatvoice-llm",
+                    event: "model_rotation",
+                    reason: "429 rate limit",
+                    currentModel,
+                    nextModel: next,
+                    rotation: rotation + 1,
+                  }),
+                );
+                currentModel = next;
+                break; // break inner retry loop, continue outer rotation loop
+              }
+            }
+
+            // Retry only on transient errors (429, 5xx) within same model
+            if (isRetryable(response.status) && attempt < MAX_RETRIES) {
+              console.log(
+                JSON.stringify({
+                  service: "bharatvoice-llm",
+                  event: "retry",
+                  status: response.status,
+                  attempt: attempt + 1,
+                  model: currentModel,
+                }),
+              );
+              continue;
+            }
+
+            return {
+              content: "",
+              latencyMs: Date.now() - started,
+              provider: this.name,
+              model: currentModel,
+              error: structured.message,
+              structuredError: structured,
+            };
           }
 
+          const body = (await response.json()) as {
+            choices?: { message?: { content?: string | null } }[];
+            usage?: { prompt_tokens?: number; completion_tokens?: number };
+          };
+          // Some models (safety classifiers, reasoning models) return content:
+          // null instead of an empty string — treat as empty.
+          const content = body.choices?.[0]?.message?.content ?? "";
+          const finalContent = content ?? "";
+
+          return {
+            content: finalContent,
+            latencyMs: Date.now() - started,
+            provider: this.name,
+            model: currentModel,
+            promptTokens: body.usage?.prompt_tokens,
+            completionTokens: body.usage?.completion_tokens,
+            error: finalContent ? null : "LLM returned an empty response",
+          };
+        } catch (err) {
+          const aborted =
+            err instanceof DOMException &&
+            (err.name === "TimeoutError" || err.name === "AbortError");
+          // Timeout is retryable
+          if (aborted && attempt < MAX_RETRIES) continue;
           return {
             content: "",
             latencyMs: Date.now() - started,
             provider: this.name,
-            model: this.model,
-            error: structured.message,
-            structuredError: structured,
-          };
-        }
-
-        const body = (await response.json()) as {
-          choices?: { message?: { content?: string | null } }[];
-          usage?: { prompt_tokens?: number; completion_tokens?: number };
-        };
-        // Some models (safety classifiers, reasoning models) return content:
-        // null instead of an empty string — treat as empty.
-        const content = body.choices?.[0]?.message?.content ?? "";
-        const finalContent = content ?? "";
-
-        return {
-          content: finalContent,
-          latencyMs: Date.now() - started,
-          provider: this.name,
-          model: this.model,
-          promptTokens: body.usage?.prompt_tokens,
-          completionTokens: body.usage?.completion_tokens,
-          error: finalContent ? null : "LLM returned an empty response",
-        };
-      } catch (err) {
-        const aborted =
-          err instanceof DOMException &&
-          (err.name === "TimeoutError" || err.name === "AbortError");
-        // Timeout is retryable
-        if (aborted && attempt < MAX_RETRIES) continue;
-        return {
-          content: "",
-          latencyMs: Date.now() - started,
-          provider: this.name,
-          model: this.model,
-          error: aborted
-            ? "AI request timed out. Please try again."
-            : "AI request failed. Check your network connection.",
-          structuredError: {
-            type: aborted ? "timeout" : "network",
-            message: aborted
+            model: currentModel,
+            error: aborted
               ? "AI request timed out. Please try again."
               : "AI request failed. Check your network connection.",
-            httpStatus: null,
-            providerCode: null,
-            model: this.model,
-          },
-        };
+            structuredError: {
+              type: aborted ? "timeout" : "network",
+              message: aborted
+                ? "AI request timed out. Please try again."
+                : "AI request failed. Check your network connection.",
+              httpStatus: null,
+              providerCode: null,
+              model: currentModel,
+            },
+          };
+        }
       }
     }
 
@@ -415,8 +477,8 @@ export class OpenAICompatibleLLMProvider implements LLMProvider {
       content: "",
       latencyMs: Date.now() - started,
       provider: this.name,
-      model: this.model,
-      error: "Unexpected error in LLM retry loop",
+      model: currentModel,
+      error: "All free models are rate-limited. Please try again in a moment.",
     };
   }
 }
