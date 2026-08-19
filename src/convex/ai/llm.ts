@@ -133,16 +133,22 @@ function sleep(ms: number): Promise<void> {
 // Model resolution — avoid random-router models that may pick safety classifiers
 // ---------------------------------------------------------------------------
 
-/** Models that randomly route to non-chat models on OpenRouter. */
+/** Models that randomly route to non-chat models or are no longer free on OpenRouter. */
 const UNRELIABLE_MODELS = new Set([
   "openrouter/auto",
   "openrouter/free",
   "auto",
   "free",
+  // Removed from free tier (returns 404)
+  "meta-llama/llama-3.1-8b-instruct:free",
+  // Not a chat model — content-safety classifiers
+  "nvidia/nemotron-3.5-content-safety:free",
 ]);
 
-/** Reliable free models with Hindi support for fallback. */
-const RELIABLE_FALLBACK_MODEL = "meta-llama/llama-3.1-8b-instruct:free";
+/** Reliable free models with Hindi support for fallback.
+ *  Verified working: Google Gemma 4 — multilingual, chat, free tier.
+ *  31B is primary, 26B is backup (faster, less rate-limited). */
+const RELIABLE_FALLBACK_MODEL = "google/gemma-4-31b-it:free";
 
 /**
  * If the user configured a random-router model slug (e.g. "openrouter/free"),

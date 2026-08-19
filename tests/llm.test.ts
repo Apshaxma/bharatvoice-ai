@@ -220,30 +220,38 @@ describe("mock responder — grounded multilingual answers", () => {
 
 describe("resolveModel — avoid random-router models", () => {
   test("openrouter/free falls back to reliable model", () => {
-    expect(resolveModel("openrouter/free")).toBe("meta-llama/llama-3.1-8b-instruct:free");
+    expect(resolveModel("openrouter/free")).toBe("google/gemma-4-31b-it:free");
   });
 
   test("openrouter/auto falls back to reliable model", () => {
-    expect(resolveModel("openrouter/auto")).toBe("meta-llama/llama-3.1-8b-instruct:free");
+    expect(resolveModel("openrouter/auto")).toBe("google/gemma-4-31b-it:free");
   });
 
   test("empty string falls back to reliable model", () => {
-    expect(resolveModel("")).toBe("meta-llama/llama-3.1-8b-instruct:free");
+    expect(resolveModel("")).toBe("google/gemma-4-31b-it:free");
   });
 
   test("undefined falls back to reliable model", () => {
-    expect(resolveModel(undefined)).toBe("meta-llama/llama-3.1-8b-instruct:free");
+    expect(resolveModel(undefined)).toBe("google/gemma-4-31b-it:free");
+  });
+
+  test("removed model meta-llama/llama-3.1-8b-instruct:free falls back", () => {
+    expect(resolveModel("meta-llama/llama-3.1-8b-instruct:free")).toBe("google/gemma-4-31b-it:free");
+  });
+
+  test("content-safety classifier falls back", () => {
+    expect(resolveModel("nvidia/nemotron-3.5-content-safety:free")).toBe("google/gemma-4-31b-it:free");
   });
 
   test("specific model slug is preserved", () => {
-    expect(resolveModel("meta-llama/llama-3.1-8b-instruct:free")).toBe("meta-llama/llama-3.1-8b-instruct:free");
+    expect(resolveModel("google/gemma-4-31b-it:free")).toBe("google/gemma-4-31b-it:free");
     expect(resolveModel("google/gemma-2-9b-it:free")).toBe("google/gemma-2-9b-it:free");
     expect(resolveModel("mistralai/mistral-7b-instruct:free")).toBe("mistralai/mistral-7b-instruct:free");
   });
 
   test("case-insensitive detection of unreliable models", () => {
-    expect(resolveModel("OpenRouter/Free")).toBe("meta-llama/llama-3.1-8b-instruct:free");
-    expect(resolveModel("OPENROUTER/AUTO")).toBe("meta-llama/llama-3.1-8b-instruct:free");
+    expect(resolveModel("OpenRouter/Free")).toBe("google/gemma-4-31b-it:free");
+    expect(resolveModel("OPENROUTER/AUTO")).toBe("google/gemma-4-31b-it:free");
   });
 });
 
@@ -299,13 +307,13 @@ describe("LLM provider factory — vendor-independent", () => {
 
   test("OpenAI-compatible constructor resolves unreliable models", () => {
     const p1 = new OpenAICompatibleLLMProvider({ apiKey: "sk-test", model: "openrouter/free" });
-    expect(p1.model).toBe("meta-llama/llama-3.1-8b-instruct:free");
+    expect(p1.model).toBe("google/gemma-4-31b-it:free");
 
     const p2 = new OpenAICompatibleLLMProvider({ apiKey: "sk-test", model: "openrouter/auto" });
-    expect(p2.model).toBe("meta-llama/llama-3.1-8b-instruct:free");
+    expect(p2.model).toBe("google/gemma-4-31b-it:free");
 
     const p3 = new OpenAICompatibleLLMProvider({ apiKey: "sk-test" });
-    expect(p3.model).toBe("meta-llama/llama-3.1-8b-instruct:free");
+    expect(p3.model).toBe("google/gemma-4-31b-it:free");
 
     const p4 = new OpenAICompatibleLLMProvider({ apiKey: "sk-test", model: "google/gemma-2-9b-it:free" });
     expect(p4.model).toBe("google/gemma-2-9b-it:free");
