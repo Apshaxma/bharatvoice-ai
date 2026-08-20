@@ -10,6 +10,7 @@
 
 import type * as agent from "../agent.js";
 import type * as agentDb from "../agentDb.js";
+import type * as ai_errors from "../ai/errors.js";
 import type * as ai_judge from "../ai/judge.js";
 import type * as ai_languages from "../ai/languages.js";
 import type * as ai_llm from "../ai/llm.js";
@@ -37,6 +38,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   agent: typeof agent;
   agentDb: typeof agentDb;
+  "ai/errors": typeof ai_errors;
   "ai/judge": typeof ai_judge;
   "ai/languages": typeof ai_languages;
   "ai/llm": typeof ai_llm;

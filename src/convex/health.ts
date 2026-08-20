@@ -8,7 +8,7 @@
  */
 
 import { action } from "./_generated/server";
-import { createLLMProvider, resolveModel } from "./ai/llm";
+import { createLLMProvider, resolveModel, FREE_MODEL_ROTATION } from "./ai/llm";
 
 function env(name: string): string {
   return process.env[name] ?? "";
@@ -92,35 +92,89 @@ export const healthCheck = action({
         const responseBody = await response.text();
 
         // Safe logging — NEVER expose the API key
+        // Safe logging — NEVER expose the API key or full response body
         console.log(JSON.stringify({
           service: "bharatvoice-health",
           event: "openrouter_diagnostic",
           httpStatus: response.status,
-          baseUrl: baseUrlClean,
           model: testModel,
           apiKeyConfigured: true,
-          responseBodyPreview: responseBody.slice(0, 500),
         }));
 
         if (!response.ok) {
-          // Parse the error body for more detail
+          // Parse the error body for safe, non-leaking detail
           let providerCode = "unknown";
-          let providerMessage = responseBody;
+          let safeMessage = "Provider error";
           try {
             const parsed = JSON.parse(responseBody);
             if (parsed.error) {
               providerCode = parsed.error.code || parsed.error.type || "unknown";
-              providerMessage = parsed.error.message || responseBody;
+              // Only use the error message — never the full body
+              safeMessage = parsed.error.message || "Provider error";
+              // Trim any accidental key fragments from provider error messages
+              safeMessage = safeMessage.slice(0, 200);
             }
           } catch { /* not JSON */ }
 
           checks.push({
             name: "LLM connectivity (raw)",
             status: "FAIL",
-            detail: `HTTP ${response.status} | Provider code: ${providerCode} | Message: ${providerMessage.slice(0, 300)}`,
+            detail: `HTTP ${response.status} | Provider code: ${providerCode} | ${safeMessage}`,
           });
+
+          // 429 on primary → try rotation models to verify at least one works
+          if (response.status === 429) {
+            let rotationOk = false;
+            let workingModel = "";
+            // Try the next 2 models in the rotation list
+            const idx = FREE_MODEL_ROTATION.findIndex((m) => m === testModel);
+            const candidates = idx >= 0
+              ? FREE_MODEL_ROTATION.slice(idx + 1, idx + 3)
+              : FREE_MODEL_ROTATION.slice(0, 2);
+
+            for (const rotModel of candidates) {
+              try {
+                const rotResp = await fetch(`${baseUrlClean}/chat/completions`, {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${openAiKey}`,
+                  },
+                  body: JSON.stringify({
+                    model: rotModel,
+                    messages: [{ role: "user", content: "Say exactly: rotation ok" }],
+                    temperature: 0,
+                    max_tokens: 20,
+                  }),
+                  signal: AbortSignal.timeout(10_000),
+                });
+                if (rotResp.ok) {
+                  const rotBody = await rotResp.json() as { choices?: { message?: { content?: string } }[] };
+                  if (rotBody.choices?.[0]?.message?.content) {
+                    rotationOk = true;
+                    workingModel = rotModel;
+                    break;
+                  }
+                }
+              } catch { /* continue to next */ }
+            }
+
+            if (rotationOk) {
+              checks.push({
+                name: "LLM rotation fallback",
+                status: "PASS",
+                detail: `Primary rate-limited, but rotation model "${workingModel}" responds OK.`,
+              });
+            } else {
+              checks.push({
+                name: "LLM rotation fallback",
+                status: "WARNING",
+                detail: `Primary rate-limited. Tested ${candidates.length} rotation models — all failed.`,
+              });
+            }
+          }
         } else {
-          // Parse success
+          // Parse success — safe, no raw body exposed
           let content = "";
           try {
             const parsed = JSON.parse(responseBody);
@@ -137,7 +191,7 @@ export const healthCheck = action({
             checks.push({
               name: "LLM connectivity (raw)",
               status: "FAIL",
-              detail: `HTTP 200 but empty content. Response body preview: ${responseBody.slice(0, 300)}`,
+              detail: `HTTP 200 but empty content from model: ${testModel}`,
             });
           }
         }
