@@ -153,7 +153,15 @@ export default function AssistantTab() {
 
       // Show user-friendly error if the LLM failed
       if (res.status === "error" && res.errorMessage) {
-        toast.error(res.errorMessage, { duration: 6000 });
+        toast.error(res.errorMessage, {
+          duration: 8000,
+          action: {
+            label: "Retry",
+            onClick: () => {
+              void sendTurn(trimmed, source, meta);
+            },
+          },
+        });
       }
 
       if (res.status !== "error") {
@@ -194,7 +202,16 @@ export default function AssistantTab() {
         friendly = "AI request timed out. Please try again.";
       else if (raw.includes("network") || raw.includes("fetch"))
         friendly = "Unable to connect to the AI service.";
-      toast.error(friendly, { duration: 5000 });
+      toast.error(friendly, {
+        duration: 8000,
+        action: {
+          label: "Retry",
+          onClick: () => {
+            // Re-send the last message
+            void sendTurn(trimmed, source, meta);
+          },
+        },
+      });
     } finally {
       processingRef.current = false;
       setIsProcessing(false);

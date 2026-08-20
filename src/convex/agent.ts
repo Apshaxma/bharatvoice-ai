@@ -536,14 +536,17 @@ export const runAgent = action({
       // Catch-all: never let the Convex action throw an unhandled exception.
       // Return a structured error the frontend can display gracefully.
       const totalLatencyMs = Date.now() - totalStartedAt;
-      const errorMessage = "Something went wrong. Please try again.";
+      const rawMessage = err instanceof Error ? err.message : String(err);
+      // Classify the error using the same friendly mapping as LLM errors
+      const errorMessage = friendlyErrorMessage(rawMessage);
 
       logEvent({
         event: "agent.unhandled_error",
         requestId,
         userId,
-        error: err instanceof Error ? err.message : "unknown",
         errorType: err instanceof Error ? err.name : "UnknownError",
+        // Log a safe, truncated version of the error — never full stack traces
+        errorMessage: rawMessage.slice(0, 200),
         totalLatencyMs,
       });
 
