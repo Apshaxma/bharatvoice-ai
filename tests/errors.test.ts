@@ -95,7 +95,8 @@ describe("friendlyErrorMessage", () => {
   });
 
   test("openrouter keyword → configuration incomplete", () => {
-    expect(friendlyErrorMessage("openrouter auth failed")).toContain("configuration is incomplete");
+    // "openrouter" without auth/rate-limit keywords triggers config message
+    expect(friendlyErrorMessage("openrouter connection refused")).toContain("configuration is incomplete");
   });
 
   // --- Default fallback ---
